@@ -1,0 +1,15 @@
+.DS_Store
+.venv/
+.venv-win/
+__pycache__/
+*.py[cod]
+*.spec
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.bkproj/
