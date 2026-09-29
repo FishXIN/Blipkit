@@ -55,7 +55,7 @@ jobs:
       - name: Build Windows
         if: runner.os == 'Windows'
         shell: powershell
-        run: .\build_windows.ps1 -SkipInstall
+        run: .\build_windows.ps1
 
       - name: Upload macOS artifact
         if: runner.os == 'macOS'
