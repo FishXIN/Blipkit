@@ -1,0 +1,76 @@
+name: Build desktop apps
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-2025]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Create environment
+        shell: bash
+        run: |
+          python -m venv .venv
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            .venv/Scripts/python -m pip install --upgrade pip
+            .venv/Scripts/pip install -e ".[dev]"
+          else
+            .venv/bin/python -m pip install --upgrade pip
+            .venv/bin/pip install -e ".[dev]"
+          fi
+
+      - name: Test
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            .venv/Scripts/pytest
+          else
+            .venv/bin/pytest
+          fi
+
+      - name: Build macOS
+        if: runner.os == 'macOS'
+        run: ./build_app.sh
+
+      - name: Build Windows
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\build_windows.ps1 -SkipInstall
+
+      - name: Upload macOS artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: Blipkit-macOS
+          path: |
+            dist/Blipkit-*.zip
+            dist/checksums.txt
+
+      - name: Upload Windows artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: Blipkit-Windows
+          path: |
+            dist/Blipkit-*.zip
+            dist/checksums-windows.txt
