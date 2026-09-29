@@ -131,7 +131,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         ).grid(row=row, column=0, columnspan=3, sticky="ew", pady=(0, 10))
         return row + 1
 
-    def _label(self, parent, row: int, text: str) -> None:
+    def _form_label(self, parent, row: int, text: str) -> None:
         ctk.CTkLabel(
             parent,
             text=text,
@@ -142,7 +142,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         ).grid(row=row, column=0, sticky="w", pady=6)
 
     def _entry_row(self, parent, row: int, label: str, variable) -> None:
-        self._label(parent, row, label)
+        self._form_label(parent, row, label)
         ctk.CTkEntry(
             parent,
             textvariable=variable,
@@ -156,7 +156,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         ).grid(row=row, column=1, sticky="w", pady=6)
 
     def _static_row(self, parent, row: int, label: str, value: str) -> None:
-        self._label(parent, row, label)
+        self._form_label(parent, row, label)
         ctk.CTkLabel(
             parent,
             text=value,
@@ -166,7 +166,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         ).grid(row=row, column=1, columnspan=2, sticky="w", pady=6)
 
     def _option_row(self, parent, row, label, variable, values, command=None) -> None:
-        self._label(parent, row, label)
+        self._form_label(parent, row, label)
         ctk.CTkOptionMenu(
             parent,
             variable=variable,
@@ -186,7 +186,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         ).grid(row=row, column=1, sticky="w", pady=6)
 
     def _switch_row(self, parent, row, label, variable) -> None:
-        self._label(parent, row, label)
+        self._form_label(parent, row, label)
         ctk.CTkSwitch(
             parent,
             text="",
@@ -202,7 +202,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         ).grid(row=row, column=1, sticky="w", pady=6)
 
     def _path_row(self, parent, row: int) -> None:
-        self._label(parent, row, "输出路径")
+        self._form_label(parent, row, "输出路径")
         entry = ctk.CTkEntry(
             parent,
             textvariable=self.path_var,

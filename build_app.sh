@@ -13,14 +13,16 @@ VERSION=$("$PY" -c "from blipkit import __version__; print(__version__)")
 ARCH=$(uname -m)
 rm -rf build dist/Blipkit.app dist/Blipkit
 
-"$PYINSTALLER" main.py \
+PYINSTALLER_CONFIG_DIR="$PWD/build/.pyinstaller" "$PYINSTALLER" main.py \
   --noconfirm \
   --clean \
   --windowed \
   --onedir \
   --name Blipkit \
   --paths src \
+  --icon "$PWD/assets/icon.icns" \
   --osx-bundle-identifier com.blipkit.desktop \
+  --add-data "$PWD/assets/icon.png:assets" \
   --collect-all customtkinter \
   --hidden-import soundfile \
   --hidden-import lameenc \
@@ -35,6 +37,12 @@ rm -rf build dist/Blipkit.app dist/Blipkit
 
 APP="dist/Blipkit.app"
 [ -d "$APP" ] || { echo "Build failed: $APP was not created."; exit 1; }
+PLIST="$APP/Contents/Info.plist"
+RELEASE_VERSION="${VERSION%%.dev*}"
+/usr/libexec/PlistBuddy -c \
+  "Set :CFBundleShortVersionString $RELEASE_VERSION" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion 1" "$PLIST" 2>/dev/null || \
+  /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 1" "$PLIST"
 codesign --force --deep --sign - "$APP"
 
 ZIP="dist/Blipkit-${VERSION}-macos-${ARCH}.zip"

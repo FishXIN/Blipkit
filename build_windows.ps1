@@ -19,6 +19,9 @@ if (-not $SkipInstall) {
 
 $Version = (& $Python -c "from blipkit import __version__; print(__version__)").Trim()
 $Arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
+$env:PYINSTALLER_CONFIG_DIR = Join-Path $PWD "build\.pyinstaller"
+$Icon = Join-Path $PWD "assets\icon.ico"
+$IconPng = Join-Path $PWD "assets\icon.png"
 
 Remove-Item -Recurse -Force build\windows, dist\windows -ErrorAction SilentlyContinue
 & $PyInstaller main.py `
@@ -28,6 +31,8 @@ Remove-Item -Recurse -Force build\windows, dist\windows -ErrorAction SilentlyCon
     --onedir `
     --name Blipkit `
     --paths src `
+    --icon $Icon `
+    --add-data "$IconPng;assets" `
     --collect-all customtkinter `
     --hidden-import soundfile `
     --hidden-import lameenc `

@@ -34,6 +34,7 @@ class BlipkitApp(ctk.CTk):
         self.title("Blipkit")
         self.geometry("1240x780")
         self.minsize(1040, 680)
+        self._apply_window_icon()
         if sys.platform == "darwin":
             self.createcommand("tk::mac::Quit", self._close)
 
@@ -58,6 +59,17 @@ class BlipkitApp(ctk.CTk):
         self.refresh_assets()
         self.show_view("music")
         self.after(self.settings.autosave_seconds * 1000, self._autosave)
+
+    def _apply_window_icon(self) -> None:
+        base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
+        path = base / "assets" / "icon.png"
+        if not path.is_file():
+            return
+        try:
+            self._window_icon = tk.PhotoImage(file=str(path))
+            self.iconphoto(True, self._window_icon)
+        except tk.TclError:
+            self._window_icon = None
 
     def _initial_project(self) -> BlipkitProject:
         if self.settings.last_project:
@@ -310,6 +322,7 @@ class BlipkitApp(ctk.CTk):
                 self.set_status,
             )
         self.current_view.pack(fill="both", expand=True)
+        self.refresh_assets()
         self._update_status_meta()
 
     def refresh_assets(self) -> None:

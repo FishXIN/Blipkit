@@ -56,11 +56,11 @@ class LibraryView(ctk.CTkFrame):
             height=28,
             corner_radius=T.RADIUS,
             fg_color=T.SURFACE_ALT,
-            selected_color=T.TEXT,
-            selected_hover_color=T.TEXT_SECONDARY,
+            selected_color=T.ACCENT_SOFT,
+            selected_hover_color=T.ACCENT_SOFT,
             unselected_color=T.SURFACE_ALT,
             unselected_hover_color=T.BORDER,
-            text_color="#FFFFFF",
+            text_color=T.TEXT,
             font=ui_font(11),
         )
         filter_control.grid(row=0, column=1, padx=(0, 10))
