@@ -14,7 +14,7 @@ def ui_font(size: int = 13, weight: str = "normal", mono: bool = False):
     if mono:
         family = T.FONT_MONO_WIN if sys.platform.startswith("win") else T.FONT_MONO_MAC
     else:
-        family = "Segoe UI" if sys.platform.startswith("win") else T.FONT_UI
+        family = T.FONT_UI_WIN if sys.platform.startswith("win") else T.FONT_UI_MAC
     return ctk.CTkFont(family=family, size=size, weight=weight)
 
 
@@ -25,12 +25,18 @@ def action_button(
     primary: bool = False,
     width: int = 86,
     danger: bool = False,
+    quiet: bool = False,
 ):
     if primary:
         fg = T.ACCENT
         hover = T.ACCENT_HOVER
         text_color = "#FFFFFF"
         border = T.ACCENT
+    elif quiet:
+        fg = "transparent"
+        hover = T.SURFACE_HOVER
+        text_color = T.TEXT_SECONDARY
+        border = T.NAV_BG
     elif danger:
         fg = T.SURFACE
         hover = T.DANGER_SOFT
@@ -46,14 +52,35 @@ def action_button(
         text=text,
         command=command,
         width=width,
-        height=30,
-        corner_radius=T.RADIUS,
-        border_width=1,
+        height=T.CONTROL_H,
+        corner_radius=T.RADIUS_CONTROL,
+        border_width=0 if quiet else 1,
         border_color=border,
         fg_color=fg,
         hover_color=hover,
         text_color=text_color,
-        font=ui_font(13, "bold" if primary else "normal"),
+        font=ui_font(T.TEXT_13, "bold" if primary else "normal"),
+    )
+
+
+def icon_button(
+    parent,
+    text: str,
+    command: Callable | None = None,
+    danger: bool = False,
+):
+    return ctk.CTkButton(
+        parent,
+        text=text,
+        command=command,
+        width=T.CONTROL_H,
+        height=T.CONTROL_H,
+        corner_radius=T.RADIUS,
+        border_width=0,
+        fg_color="transparent",
+        hover_color=T.DANGER_SOFT if danger else T.NAV_ACTIVE,
+        text_color=T.DANGER if danger else T.TEXT_SECONDARY,
+        font=ui_font(T.TEXT_16),
     )
 
 
@@ -75,17 +102,17 @@ class LabeledSlider(ctk.CTkFrame):
         self.label = ctk.CTkLabel(
             self,
             text=label,
-            text_color=T.TEXT_SECONDARY,
-            font=ui_font(12),
+            text_color=T.TEXT_MUTED,
+            font=ui_font(T.TEXT_12),
             anchor="w",
         )
         self.label.grid(row=0, column=0, sticky="w")
         self.value_label = ctk.CTkLabel(
             self,
             text=self._format(value),
-            text_color=T.TEXT_MUTED,
-            font=ui_font(11, mono=True),
-            width=54,
+            text_color=T.TEXT,
+            font=ui_font(T.TEXT_13, mono=True),
+            width=62,
             anchor="e",
         )
         self.value_label.grid(row=0, column=1, sticky="e")
@@ -94,15 +121,16 @@ class LabeledSlider(ctk.CTkFrame):
             from_=from_,
             to=to,
             number_of_steps=200,
-            height=16,
-            button_length=14,
+            height=14,
+            border_width=0,
+            button_length=12,
             button_color=T.ACCENT,
             button_hover_color=T.ACCENT_HOVER,
             progress_color=T.ACCENT,
             fg_color=T.BORDER,
             command=self._changed,
         )
-        self.slider.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self.slider.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         self.slider.set(value)
 
     def _format(self, value: float) -> str:

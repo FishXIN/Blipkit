@@ -6,13 +6,14 @@
 
 面向独立游戏开发者的轻量桌面音频工作站，支持 macOS 与 Windows。音乐编排、程序化音效、乐理辅助、资产管理和游戏引擎导出集中在一个单窗口工作区内。
 
-> 当前为 Pre-alpha 原型，文件格式与交互可能继续调整。
+> 当前为 v0.1.0 预发布版本，文件格式与交互仍可能调整。
 
 ## 当前可用能力
 
-- Piano Roll 多轨编排，支持点击写入、音阶提示、和弦插入与无缝 Loop 渲染
+- Piano Roll 多轨编排，支持框选/多选、批量编辑、轨道混音、和弦插入、节拍器与循环试听
+- MIDI 导入导出、可变小节数、吸附、缩放、量化、力度编辑和完整撤销/重做
 - 80 个轻量内置程序化音色，覆盖芯片、键盘、弦乐、木管、铜管和民族音色
-- 22 个游戏 SFX 预设，支持波形、ADSR、音调曲线、噪声和随机种子调节
+- 22 个游戏 SFX 预设，支持 ADSR、颤音、低通、位深压缩、自动试听和可撤销变体
 - `.bkproj` 工程目录、自动保存、手动快照、SQLite 50 步操作历史和 ZIP 备份
 - WAV / OGG / MP3 / FLAC 导出
 - Unity、Godot 4、Unreal Engine 5、Web 和自定义目录输出
@@ -36,8 +37,13 @@ python3 -m venv .venv
 
 ## 主要操作
 
-- 点击 Piano Roll 空白格写入音符
-- 单击音符选中，双击或右键删除
+- 默认「选择」模式：在顶部标尺单击或拖动播放头，网格单击只负责选择
+- 拖动空白框选音符，`Shift` 点击追加选择；拖动所选音符可批量移动
+- 双击空白快速写入音符；切换「画笔」模式后拖动可控制音符长度
+- 拖动音符右边缘调整时长；右键音符或选中后按 `Delete` 删除
+- 未选择音符时用 `←/→` 微调播放头；选中后方向键移动/移调音符
+- `Shift + ↑/↓` 移调八度，`Alt + ↑/↓` 调整力度
+- `Cmd/Ctrl + A` 全选音符，`Cmd/Ctrl + D` 复制，`Cmd/Ctrl + Z` 撤销
 - `Space` 播放或停止，`Cmd/Ctrl + S` 保存
 - 左侧切换音乐编排、音效生成、资产管理和工程设置
 - 工程设置中绑定 Unity、Godot、Unreal 或 Web 输出目录
@@ -84,6 +90,7 @@ Blipkit/
 ├── src/blipkit/
 │   ├── core/
 │   │   ├── sequencer.py
+│   │   ├── midi_io.py
 │   │   ├── sfx_synth.py
 │   │   ├── soundbank.py
 │   │   ├── audio_io.py
@@ -102,7 +109,8 @@ Blipkit/
 
 当前内置音色采用程序化合成以保持包体和启动速度；外部 SF2 导入及真实采样音色属于后续版本范围。
 
-产品边界见 [docs/PRODUCT.md](docs/PRODUCT.md)，开发顺序见 [ROADMAP.md](ROADMAP.md)。
+产品边界见 [docs/PRODUCT.md](docs/PRODUCT.md)，开发顺序见 [ROADMAP.md](ROADMAP.md)，
+版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可证
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 import tkinter as tk
 from collections.abc import Callable, Iterable
@@ -38,42 +39,45 @@ class LibraryView(ctk.CTkFrame):
         self.refresh(self.assets)
 
     def _build_toolbar(self) -> None:
-        toolbar = ctk.CTkFrame(self, height=48, fg_color=T.SURFACE, corner_radius=0)
+        toolbar = ctk.CTkFrame(self, height=60, fg_color=T.SURFACE, corner_radius=0)
         toolbar.grid(row=0, column=0, sticky="ew")
         toolbar.grid_propagate(False)
+        toolbar.grid_rowconfigure(0, weight=1)
         toolbar.grid_columnconfigure(3, weight=1)
         ctk.CTkLabel(
             toolbar,
             text="资产库",
             text_color=T.TEXT,
-            font=ui_font(14, "bold"),
-        ).grid(row=0, column=0, padx=(16, 14), pady=9)
+            font=ui_font(T.TEXT_16, "bold"),
+        ).grid(row=0, column=0, padx=(20, 16))
         filter_control = ctk.CTkSegmentedButton(
             toolbar,
             values=["全部", "音乐", "音效"],
             variable=self.filter_var,
             command=lambda _value: self._populate(),
-            height=28,
+            height=T.CONTROL_H,
             corner_radius=T.RADIUS,
-            fg_color=T.SURFACE_ALT,
-            selected_color=T.ACCENT_SOFT,
-            selected_hover_color=T.ACCENT_SOFT,
-            unselected_color=T.SURFACE_ALT,
-            unselected_hover_color=T.BORDER,
+            fg_color=T.NAV_BG,
+            selected_color=T.NAV_ACTIVE,
+            selected_hover_color=T.NAV_ACTIVE,
+            unselected_color=T.NAV_BG,
+            unselected_hover_color=T.NAV_ACTIVE,
             text_color=T.TEXT,
-            font=ui_font(11),
+            font=ui_font(T.TEXT_13),
         )
-        filter_control.grid(row=0, column=1, padx=(0, 10))
+        filter_control.grid(row=0, column=1, padx=(0, 12))
         search = ctk.CTkEntry(
             toolbar,
-            width=180,
-            height=28,
+            width=220,
+            height=T.CONTROL_H,
             textvariable=self.search_var,
             placeholder_text="搜索资产",
-            corner_radius=T.RADIUS,
+            placeholder_text_color=T.TEXT_MUTED,
+            corner_radius=T.RADIUS_CONTROL,
             border_color=T.BORDER,
-            fg_color=T.SURFACE,
-            font=ui_font(12),
+            fg_color=T.NAV_BG,
+            text_color=T.TEXT,
+            font=ui_font(T.TEXT_13),
         )
         search.grid(row=0, column=2)
         self.search_var.trace_add("write", lambda *_args: self._populate())
@@ -82,31 +86,32 @@ class LibraryView(ctk.CTkFrame):
             "导出所选",
             self._export_selected,
             primary=True,
-            width=86,
-        ).grid(row=0, column=4, padx=(8, 16))
+            width=92,
+        ).grid(row=0, column=4, padx=(12, 20))
 
     def _build_table(self) -> None:
         shell = ctk.CTkFrame(
             self,
             fg_color=T.SURFACE,
-            corner_radius=0,
+            corner_radius=T.RADIUS_PANEL,
             border_width=1,
             border_color=T.BORDER,
         )
-        shell.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 16))
+        shell.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
         shell.grid_rowconfigure(0, weight=1)
         shell.grid_columnconfigure(0, weight=1)
 
         style = ttk.Style()
         style.theme_use("clam")
+        font_family = T.FONT_UI_WIN if sys.platform.startswith("win") else T.FONT_UI_MAC
         style.configure(
             "Blipkit.Treeview",
             background=T.SURFACE,
             fieldbackground=T.SURFACE,
             foreground=T.TEXT_SECONDARY,
             borderwidth=0,
-            rowheight=34,
-            font=("SF Pro Text", 12),
+            rowheight=40,
+            font=(font_family, T.TEXT_13),
         )
         style.configure(
             "Blipkit.Treeview.Heading",
@@ -114,7 +119,7 @@ class LibraryView(ctk.CTkFrame):
             foreground=T.TEXT_MUTED,
             borderwidth=0,
             relief="flat",
-            font=("SF Pro Text", 11, "normal"),
+            font=(font_family, T.TEXT_12, "normal"),
         )
         style.map(
             "Blipkit.Treeview",

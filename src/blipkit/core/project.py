@@ -33,7 +33,7 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _template_song(name: str, template: str) -> Song:
-    colors = ("#5B8DEF", "#57A773", "#C58A3A", "#A56CC1")
+    colors = ("#006CFF", "#18A57A", "#B66B18", "#8B5CF6")
     tracks = [
         Track(name="主旋律", instrument="Square Lead", color=colors[0]),
         Track(name="和声", instrument="Strings Ensemble", volume=0.58, color=colors[1]),

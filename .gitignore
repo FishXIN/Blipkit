@@ -1,6 +1,7 @@
 .DS_Store
 .venv/
 .venv-win/
+.pyinstaller/
 __pycache__/
 *.py[cod]
 *.spec
@@ -14,3 +15,4 @@ dist/
 htmlcov/
 *.bkproj/
 assets/Blipkit.iconset/
+.ui-test-data/

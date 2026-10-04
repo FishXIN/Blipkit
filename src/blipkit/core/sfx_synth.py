@@ -269,6 +269,49 @@ def randomize_patch(patch: SFXPatch, seed: int = None) -> SFXPatch:
         bend=max(0.2, patch.bend * rng.uniform(0.78, 1.22)),
         duration=max(0.04, patch.duration * rng.uniform(0.85, 1.15)),
         noise=min(1.0, max(0.0, patch.noise + rng.uniform(-0.1, 0.1))),
+        vibrato_depth=min(
+            2.0,
+            max(0.0, patch.vibrato_depth + rng.uniform(-0.16, 0.16)),
+        ),
+        vibrato_rate=min(
+            24.0,
+            max(0.1, patch.vibrato_rate * rng.uniform(0.82, 1.18)),
+        ),
+        lowpass_cutoff=min(
+            1.0,
+            max(0.05, patch.lowpass_cutoff + rng.uniform(-0.1, 0.1)),
+        ),
+        crush=min(1.0, max(0.0, patch.crush + rng.uniform(-0.08, 0.08))),
+        seed=actual_seed,
+    )
+
+
+def mutate_patch(
+    patch: SFXPatch,
+    seed: int | None = None,
+    amount: float = 0.06,
+) -> SFXPatch:
+    actual_seed = seed if seed is not None else random.randint(1, 2**31 - 1)
+    rng = random.Random(actual_seed)
+    spread = max(0.01, min(0.25, amount))
+
+    def scale(value: float, minimum: float, maximum: float) -> float:
+        return min(maximum, max(minimum, value * rng.uniform(1.0 - spread, 1.0 + spread)))
+
+    def offset(value: float, minimum: float, maximum: float) -> float:
+        return min(maximum, max(minimum, value + rng.uniform(-spread, spread)))
+
+    return replace(
+        patch,
+        start_freq=scale(patch.start_freq, 30.0, 2400.0),
+        end_freq=scale(patch.end_freq, 20.0, 2400.0),
+        bend=scale(patch.bend, 0.2, 3.0),
+        duration=scale(patch.duration, 0.04, 2.0),
+        noise=offset(patch.noise, 0.0, 1.0),
+        vibrato_depth=offset(patch.vibrato_depth, 0.0, 2.0),
+        vibrato_rate=scale(patch.vibrato_rate, 0.1, 24.0),
+        lowpass_cutoff=offset(patch.lowpass_cutoff, 0.05, 1.0),
+        crush=offset(patch.crush, 0.0, 1.0),
         seed=actual_seed,
     )
 
@@ -292,6 +335,10 @@ def synthesize(patch: SFXPatch, sample_rate: int = 44100) -> np.ndarray:
     t = np.linspace(0.0, 1.0, frames, endpoint=False, dtype=np.float64)
     curve = np.power(t, max(0.08, patch.bend))
     frequency = patch.start_freq + (patch.end_freq - patch.start_freq) * curve
+    if patch.vibrato_depth > 0.0:
+        seconds = np.arange(frames, dtype=np.float64) / float(sample_rate)
+        vibrato = np.sin(2.0 * np.pi * max(0.1, patch.vibrato_rate) * seconds)
+        frequency *= np.power(2.0, patch.vibrato_depth * vibrato / 12.0)
     phase = 2.0 * np.pi * np.cumsum(frequency) / sample_rate
     waveform = patch.waveform.lower()
     if waveform == "square":
@@ -316,6 +363,16 @@ def synthesize(patch: SFXPatch, sample_rate: int = 44100) -> np.ndarray:
         if smoothing > 1:
             kernel = np.ones(smoothing, dtype=np.float64) / smoothing
             signal = np.convolve(signal, kernel, mode="same")
+
+    if patch.lowpass_cutoff < 0.995:
+        smoothing = 1 + int((1.0 - max(0.05, patch.lowpass_cutoff)) * 36)
+        kernel = np.ones(smoothing, dtype=np.float64) / smoothing
+        signal = np.convolve(signal, kernel, mode="same")
+
+    if patch.crush > 0.001:
+        bits = max(3, int(round(16 - min(1.0, patch.crush) * 12)))
+        levels = float(2 ** (bits - 1))
+        signal = np.round(signal * levels) / levels
 
     signal *= _adsr(patch, frames, sample_rate)
     signal *= min(1.0, max(0.0, patch.volume))

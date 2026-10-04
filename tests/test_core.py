@@ -13,11 +13,12 @@ import numpy as np
 from blipkit.core.audio_io import export_audio
 from blipkit.core.engine_bridge import output_root, validate_engine_path
 from blipkit.core.export import export_project
+from blipkit.core.midi_io import export_song_midi, import_song_midi
 from blipkit.core.models import Note, Song, Track
 from blipkit.core.music_assistant import chord_to_midi, is_in_scale
 from blipkit.core.project import BlipkitProject
 from blipkit.core.sequencer import render_song
-from blipkit.core.sfx_synth import get_preset, synthesize
+from blipkit.core.sfx_synth import get_preset, mutate_patch, synthesize
 from blipkit.core.soundbank import BUILTIN_PRESETS
 
 
@@ -42,6 +43,15 @@ class SynthesisTests(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(first)))
         self.assertLessEqual(float(np.max(np.abs(first))), 1.0)
 
+    def test_sfx_mutation_is_repeatable_and_changes_sound(self):
+        patch = get_preset("Coin")
+        first = mutate_patch(patch, seed=42)
+        second = mutate_patch(patch, seed=42)
+        self.assertEqual(first.to_dict(), second.to_dict())
+        self.assertNotEqual(first.start_freq, patch.start_freq)
+        rendered = synthesize(first, sample_rate=8000)
+        self.assertTrue(np.all(np.isfinite(rendered)))
+
     def test_song_loop_length_and_stereo(self):
         song = Song(
             name="loop",
@@ -60,6 +70,22 @@ class SynthesisTests(unittest.TestCase):
         self.assertEqual(rendered.shape, (16000, 2))
         self.assertGreater(float(np.max(np.abs(rendered))), 0.01)
 
+    def test_solo_tracks_override_non_solo_tracks(self):
+        song = Song(
+            name="solo",
+            bpm=120,
+            bars=1,
+            loop_end=4,
+            tracks=[
+                Track(name="solo", soloed=True, notes=[Note(pitch=60, start=0)]),
+                Track(name="other", notes=[Note(pitch=72, start=1)]),
+            ],
+        )
+        solo_mix = render_song(song, sample_rate=8000, loop_only=True, stereo=False)
+        song.tracks[1].muted = True
+        expected = render_song(song, sample_rate=8000, loop_only=True, stereo=False)
+        self.assertTrue(np.array_equal(solo_mix, expected))
+
     def test_wav_export(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "tone.wav"
@@ -69,6 +95,31 @@ class SynthesisTests(unittest.TestCase):
                 self.assertEqual(source.getframerate(), 22050)
                 self.assertEqual(source.getnchannels(), 1)
                 self.assertGreater(source.getnframes(), 100)
+
+    def test_midi_round_trip_preserves_notes_and_tempo(self):
+        song = Song(
+            name="midi",
+            bpm=96,
+            bars=2,
+            loop_end=8,
+            tracks=[
+                Track(
+                    name="lead",
+                    notes=[
+                        Note(pitch=60, start=0, duration=1, velocity=88),
+                        Note(pitch=64, start=1.5, duration=0.5, velocity=72),
+                    ],
+                )
+            ],
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            path = export_song_midi(song, Path(folder) / "loop.mid")
+            imported = import_song_midi(path)
+        self.assertEqual(imported.bpm, 96)
+        self.assertEqual(imported.tracks[0].name, "lead")
+        self.assertEqual(len(imported.tracks[0].notes), 2)
+        self.assertEqual(imported.tracks[0].notes[1].start, 1.5)
+        self.assertEqual(imported.tracks[0].notes[1].velocity, 72)
 
 
 class ProjectTests(unittest.TestCase):

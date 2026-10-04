@@ -37,7 +37,8 @@ class Track:
     instrument: str = "Square Lead"
     volume: float = 0.8
     muted: bool = False
-    color: str = "#5B8DEF"
+    soloed: bool = False
+    color: str = "#006CFF"
     notes: list[Note] = field(default_factory=list)
     id: str = field(default_factory=lambda: _id("track"))
 
@@ -48,6 +49,7 @@ class Track:
             instrument=str(data.get("instrument", "Square Lead")),
             volume=float(data.get("volume", 0.8)),
             muted=bool(data.get("muted", False)),
+            soloed=bool(data.get("soloed", False)),
             color=str(data.get("color", "#5B8DEF")),
             notes=[Note.from_dict(item) for item in data.get("notes", [])],
             id=str(data.get("id") or _id("track")),
@@ -120,6 +122,10 @@ class SFXPatch:
     bend: float = 1.0
     duration: float = 0.35
     noise: float = 0.0
+    vibrato_depth: float = 0.0
+    vibrato_rate: float = 6.0
+    lowpass_cutoff: float = 1.0
+    crush: float = 0.0
     volume: float = 0.8
     seed: int = 1
     id: str = field(default_factory=lambda: _id("sfx"))
@@ -142,6 +148,10 @@ class SFXPatch:
             "bend": float(data.get("bend", 1.0)),
             "duration": float(data.get("duration", 0.35)),
             "noise": float(data.get("noise", 0.0)),
+            "vibrato_depth": float(data.get("vibrato_depth", 0.0)),
+            "vibrato_rate": float(data.get("vibrato_rate", 6.0)),
+            "lowpass_cutoff": float(data.get("lowpass_cutoff", 1.0)),
+            "crush": float(data.get("crush", 0.0)),
             "volume": float(data.get("volume", 0.8)),
             "seed": int(data.get("seed", 1)),
             "id": str(data.get("id") or _id("sfx")),

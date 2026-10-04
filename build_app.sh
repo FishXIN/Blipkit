@@ -13,7 +13,7 @@ VERSION=$("$PY" -c "from blipkit import __version__; print(__version__)")
 ARCH=$(uname -m)
 rm -rf build dist/Blipkit.app dist/Blipkit
 
-PYINSTALLER_CONFIG_DIR="$PWD/build/.pyinstaller" "$PYINSTALLER" main.py \
+PYINSTALLER_CONFIG_DIR="$PWD/.pyinstaller" "$PYINSTALLER" main.py \
   --noconfirm \
   --clean \
   --windowed \

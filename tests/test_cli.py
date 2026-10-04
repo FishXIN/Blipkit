@@ -2,8 +2,8 @@ from blipkit import __version__
 from blipkit.cli import main
 
 
-def test_version_is_pre_alpha() -> None:
-    assert __version__.endswith(".dev0")
+def test_version() -> None:
+    assert __version__ == "0.1.0"
 
 
 def test_cli_starts_with_help(capsys) -> None:

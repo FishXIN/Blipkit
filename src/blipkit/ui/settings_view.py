@@ -23,6 +23,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         metadata: ProjectMetadata,
         project_path: Path,
         on_save: Callable[[], None],
+        on_change: Callable[[], None],
         on_status: Callable[[str], None],
     ):
         super().__init__(
@@ -35,29 +36,38 @@ class SettingsView(ctk.CTkScrollableFrame):
         self.metadata = metadata
         self.project_path = Path(project_path)
         self.on_save = on_save
+        self.on_change = on_change
         self.on_status = on_status
         self.grid_columnconfigure(0, weight=1)
         self._build()
+        self._bind_changes()
 
     def _build(self) -> None:
-        content = ctk.CTkFrame(self, fg_color="transparent", width=720)
-        content.grid(row=0, column=0, sticky="nw", padx=28, pady=24)
+        content = ctk.CTkFrame(self, fg_color="transparent", width=760)
+        content.grid(row=0, column=0, sticky="nw", padx=48, pady=36)
         content.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
             content,
             text="工程设置",
             text_color=T.TEXT,
-            font=ui_font(20, "bold"),
+            font=ui_font(T.TEXT_24, "bold"),
             anchor="w",
         ).grid(row=0, column=0, columnspan=3, sticky="ew")
         ctk.CTkLabel(
             content,
             text="音频规格与游戏引擎输出路径",
             text_color=T.TEXT_MUTED,
-            font=ui_font(12),
+            font=ui_font(T.TEXT_13),
             anchor="w",
-        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 22))
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 32))
+        action_button(
+            content,
+            "保存设置",
+            self.save,
+            primary=True,
+            width=96,
+        ).grid(row=0, column=2, rowspan=2, sticky="ne")
 
         row = 2
         row = self._section(content, row, "工程")
@@ -102,58 +112,45 @@ class SettingsView(ctk.CTkScrollableFrame):
         )
         self.engine_status.grid(row=row, column=1, columnspan=2, sticky="ew", pady=(0, 18))
         self._update_engine_status()
-        row += 1
-
-        ctk.CTkFrame(content, height=1, fg_color=T.BORDER).grid(
-            row=row, column=0, columnspan=3, sticky="ew", pady=(8, 16)
-        )
-        row += 1
-        action_button(
-            content,
-            "保存设置",
-            self.save,
-            primary=True,
-            width=100,
-        ).grid(row=row, column=1, sticky="w")
 
     def _section(self, parent, row: int, text: str) -> int:
         if row > 2:
             ctk.CTkFrame(parent, height=1, fg_color=T.BORDER).grid(
-                row=row, column=0, columnspan=3, sticky="ew", pady=(20, 18)
+                row=row, column=0, columnspan=3, sticky="ew", pady=(24, 20)
             )
             row += 1
         ctk.CTkLabel(
             parent,
             text=text,
             text_color=T.TEXT,
-            font=ui_font(13, "bold"),
+            font=ui_font(T.TEXT_14, "bold"),
             anchor="w",
-        ).grid(row=row, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+        ).grid(row=row, column=0, columnspan=3, sticky="ew", pady=(0, 12))
         return row + 1
 
     def _form_label(self, parent, row: int, text: str) -> None:
         ctk.CTkLabel(
             parent,
             text=text,
-            text_color=T.TEXT_SECONDARY,
-            font=ui_font(12),
+            text_color=T.TEXT_MUTED,
+            font=ui_font(T.TEXT_12),
             width=120,
             anchor="w",
-        ).grid(row=row, column=0, sticky="w", pady=6)
+        ).grid(row=row, column=0, sticky="w", pady=8)
 
     def _entry_row(self, parent, row: int, label: str, variable) -> None:
         self._form_label(parent, row, label)
         ctk.CTkEntry(
             parent,
             textvariable=variable,
-            width=260,
-            height=30,
-            corner_radius=T.RADIUS,
+            width=320,
+            height=36,
+            corner_radius=T.RADIUS_CONTROL,
             border_color=T.BORDER,
             fg_color=T.SURFACE,
             text_color=T.TEXT,
-            font=ui_font(12),
-        ).grid(row=row, column=1, sticky="w", pady=6)
+            font=ui_font(T.TEXT_13),
+        ).grid(row=row, column=1, sticky="w", pady=8)
 
     def _static_row(self, parent, row: int, label: str, value: str) -> None:
         self._form_label(parent, row, label)
@@ -161,9 +158,9 @@ class SettingsView(ctk.CTkScrollableFrame):
             parent,
             text=value,
             text_color=T.TEXT_MUTED,
-            font=ui_font(11, mono=True),
+            font=ui_font(T.TEXT_13, mono=True),
             anchor="w",
-        ).grid(row=row, column=1, columnspan=2, sticky="w", pady=6)
+        ).grid(row=row, column=1, columnspan=2, sticky="w", pady=8)
 
     def _option_row(self, parent, row, label, variable, values, command=None) -> None:
         self._form_label(parent, row, label)
@@ -172,18 +169,18 @@ class SettingsView(ctk.CTkScrollableFrame):
             variable=variable,
             values=values,
             command=command,
-            width=180,
-            height=30,
-            corner_radius=T.RADIUS,
-            fg_color=T.SURFACE_ALT,
-            button_color=T.BORDER,
-            button_hover_color=T.TEXT_DISABLED,
+            width=200,
+            height=36,
+            corner_radius=T.RADIUS_CONTROL,
+            fg_color=T.NAV_BG,
+            button_color=T.NAV_ACTIVE,
+            button_hover_color=T.BORDER,
             text_color=T.TEXT,
             dropdown_fg_color=T.SURFACE,
-            dropdown_hover_color=T.ACCENT_SOFT,
+            dropdown_hover_color=T.NAV_ACTIVE,
             dropdown_text_color=T.TEXT,
-            font=ui_font(12),
-        ).grid(row=row, column=1, sticky="w", pady=6)
+            font=ui_font(T.TEXT_13),
+        ).grid(row=row, column=1, sticky="w", pady=8)
 
     def _switch_row(self, parent, row, label, variable) -> None:
         self._form_label(parent, row, label)
@@ -199,7 +196,7 @@ class SettingsView(ctk.CTkScrollableFrame):
             progress_color=T.ACCENT,
             button_color=T.SURFACE,
             button_hover_color=T.SURFACE,
-        ).grid(row=row, column=1, sticky="w", pady=6)
+        ).grid(row=row, column=1, sticky="w", pady=8)
 
     def _path_row(self, parent, row: int) -> None:
         self._form_label(parent, row, "输出路径")
@@ -207,20 +204,38 @@ class SettingsView(ctk.CTkScrollableFrame):
             parent,
             textvariable=self.path_var,
             width=390,
-            height=30,
-            corner_radius=T.RADIUS,
+            height=36,
+            corner_radius=T.RADIUS_CONTROL,
             border_color=T.BORDER,
             fg_color=T.SURFACE,
             text_color=T.TEXT,
-            font=ui_font(11, mono=True),
+            font=ui_font(T.TEXT_13, mono=True),
         )
-        entry.grid(row=row, column=1, sticky="ew", pady=6)
+        entry.grid(row=row, column=1, sticky="ew", pady=8)
         entry.bind("<FocusOut>", lambda _event: self._update_engine_status())
         action_button(parent, "选择", self._choose_path, width=58).grid(
-            row=row, column=2, padx=(8, 0), pady=6
+            row=row, column=2, padx=(8, 0), pady=8
         )
 
     def _engine_changed(self, _value: str) -> None:
+        self._update_engine_status()
+
+    def _bind_changes(self) -> None:
+        variables = (
+            self.name_var,
+            self.rate_var,
+            self.depth_var,
+            self.channels_var,
+            self.format_var,
+            self.normalize_var,
+            self.engine_var,
+            self.path_var,
+        )
+        for variable in variables:
+            variable.trace_add("write", self._value_changed)
+
+    def _value_changed(self, *_args) -> None:
+        self.on_change()
         self._update_engine_status()
 
     def _choose_path(self) -> None:
@@ -248,7 +263,7 @@ class SettingsView(ctk.CTkScrollableFrame):
             text, color = "路径与所选引擎不匹配", T.DANGER
         self.engine_status.configure(text=text, text_color=color)
 
-    def save(self) -> None:
+    def apply(self) -> None:
         self.metadata.name = self.name_var.get().strip() or self.metadata.name
         self.metadata.sample_rate = int(self.rate_var.get())
         self.metadata.bit_depth = int(self.depth_var.get())
@@ -258,5 +273,8 @@ class SettingsView(ctk.CTkScrollableFrame):
         self.metadata.engine = self.engine_var.get()
         self.metadata.engine_path = self.path_var.get().strip()
         self._update_engine_status()
+
+    def save(self) -> None:
+        self.apply()
         self.on_save()
         self.on_status("工程设置已保存")

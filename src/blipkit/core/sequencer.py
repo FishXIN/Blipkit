@@ -121,7 +121,8 @@ def render_song(
 ) -> np.ndarray:
     total_beats = max(float(song.bars * 4), float(song.loop_end))
     mix = np.zeros(max(1, int(total_beats * 60.0 / song.bpm * sample_rate)), dtype=np.float32)
-    active_tracks = [track for track in song.tracks if not track.muted]
+    solo_tracks = [track for track in song.tracks if track.soloed and not track.muted]
+    active_tracks = solo_tracks or [track for track in song.tracks if not track.muted]
     for index, track in enumerate(active_tracks):
         layer = render_track(track, song.bpm, total_beats, sample_rate)
         mix[: len(layer)] += layer
