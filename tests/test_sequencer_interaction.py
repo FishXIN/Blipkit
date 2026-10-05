@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import tkinter as tk
 from types import SimpleNamespace
 
@@ -31,7 +32,10 @@ def editor(tk_root):
         name="interaction",
         bars=4,
         loop_end=16.0,
-        tracks=[Track(name="track", notes=[note])],
+        tracks=[
+            Track(name="track", notes=[note]),
+            Track(name="track 2"),
+        ],
     )
     events: list[str] = []
     view = SequencerView(
@@ -150,6 +154,103 @@ def test_trackpad_small_deltas_scroll_both_scrollbars(editor) -> None:
 
     assert view.canvas.canvasx(0) > start_x
     assert view.canvas.canvasy(0) > start_y
+
+
+def test_plain_arrow_moves_playhead_without_editing_selected_note(editor) -> None:
+    view = editor.view
+    view._set_edit_cursor(2.0, seek=False)
+    view._set_selection({editor.note.id}, editor.note.id)
+    view.canvas.focus_force()
+
+    view.canvas.event_generate("<Right>")
+    editor.root.update()
+
+    assert view.insert_beat == pytest.approx(2.25)
+    assert editor.note.start == 1.0
+
+
+def test_modified_arrow_moves_selected_note_only(editor) -> None:
+    view = editor.view
+    view._set_edit_cursor(3.0, seek=False)
+    view._set_selection({editor.note.id}, editor.note.id)
+    view.canvas.focus_force()
+    modifier = "Command" if sys.platform == "darwin" else "Control"
+
+    view.canvas.event_generate(f"<{modifier}-Right>")
+    editor.root.update()
+
+    assert view.insert_beat == 3.0
+    assert editor.note.start == pytest.approx(1.25)
+
+
+def test_copy_and_paste_places_notes_at_playhead(editor) -> None:
+    view = editor.view
+    view._set_selection({editor.note.id}, editor.note.id)
+    assert view.copy_selected_notes()
+    view._set_edit_cursor(4.0, seek=False)
+
+    view.paste_notes_at_playhead()
+
+    assert len(view.selected_track.notes) == 2
+    pasted = next(note for note in view.selected_track.notes if note.id != editor.note.id)
+    assert pasted.start == 4.0
+    assert pasted.pitch == editor.note.pitch
+    assert view.selected_note_ids == {pasted.id}
+
+
+def test_split_uses_playhead_and_keeps_both_halves_selected(editor) -> None:
+    view = editor.view
+    view._set_selection({editor.note.id}, editor.note.id)
+    view._set_edit_cursor(1.5, seek=False)
+
+    view.split_selected_at_playhead()
+
+    assert len(view.selected_track.notes) == 2
+    assert sorted(note.duration for note in view.selected_track.notes) == [0.5, 0.5]
+    assert len(view.selected_note_ids) == 2
+
+
+@pytest.mark.parametrize(
+    ("key", "expected_start", "expected_duration"),
+    [
+        ("q", 1.5, 0.5),
+        ("w", 1.0, 0.5),
+    ],
+)
+def test_qw_trim_selected_note_at_playhead(
+    editor,
+    key: str,
+    expected_start: float,
+    expected_duration: float,
+) -> None:
+    view = editor.view
+    view._set_selection({editor.note.id}, editor.note.id)
+    view._set_edit_cursor(1.5, seek=False)
+    view.canvas.focus_force()
+
+    view.canvas.event_generate(f"<KeyPress-{key}>")
+    editor.root.update()
+
+    assert editor.note.start == expected_start
+    assert editor.note.duration == expected_duration
+
+
+def test_er_moves_selected_notes_between_tracks(editor) -> None:
+    view = editor.view
+    view._set_selection({editor.note.id}, editor.note.id)
+    view.canvas.focus_force()
+
+    view.canvas.event_generate("<KeyPress-r>")
+    editor.root.update()
+
+    assert view.selected_track_index == 1
+    assert editor.note in view.song.tracks[1].notes
+
+    view.canvas.event_generate("<KeyPress-e>")
+    editor.root.update()
+
+    assert view.selected_track_index == 0
+    assert editor.note in view.song.tracks[0].notes
 
 
 def test_note_click_selects_without_moving_playhead(editor) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import sys
 import time
 import tkinter as tk
 from collections.abc import Callable
@@ -110,6 +111,7 @@ class SequencerView(ctk.CTkFrame):
         self._playhead_start_beat = 0.0
         self._undo_stack: list[tuple[list[Track], int, float]] = []
         self._redo_stack: list[tuple[list[Track], int, float]] = []
+        self._note_clipboard: list[tuple[int, float, float, int]] = []
 
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -412,12 +414,20 @@ class SequencerView(ctk.CTkFrame):
         self.quantize_button.pack(side="left", pady=7)
         self.duplicate_button = action_button(
             note_bar,
-            "复制",
+            "重复",
             self.duplicate_selected_note,
             width=54,
             quiet=True,
         )
         self.duplicate_button.pack(side="left", pady=7)
+        self.split_button = action_button(
+            note_bar,
+            "分割",
+            self.split_selected_at_playhead,
+            width=54,
+            quiet=True,
+        )
+        self.split_button.pack(side="left", pady=7)
         self.delete_note_button = action_button(
             note_bar,
             "删除",
@@ -557,6 +567,7 @@ class SequencerView(ctk.CTkFrame):
         self.canvas.bind("<Motion>", self._canvas_motion)
         self.canvas.bind("<Leave>", self._canvas_leave)
         self.canvas.bind("<Shift-MouseWheel>", self._horizontal_wheel)
+        self.canvas.bind("<Alt-MouseWheel>", self._horizontal_wheel)
         self.canvas.bind("<Command-MouseWheel>", self._zoom_wheel)
         self.canvas.bind("<Control-MouseWheel>", self._zoom_wheel)
         self.canvas.bind("<MouseWheel>", self._vertical_wheel)
@@ -567,33 +578,46 @@ class SequencerView(ctk.CTkFrame):
         self.y_scroll.bind("<MouseWheel>", self._vertical_wheel)
         self.y_scroll.bind("<Shift-MouseWheel>", self._horizontal_wheel)
         self.canvas.bind("<space>", self._canvas_play)
-        self.canvas.bind("<Left>", lambda event: self._canvas_nudge(event, beats=-1))
-        self.canvas.bind("<Right>", lambda event: self._canvas_nudge(event, beats=1))
-        self.canvas.bind("<Up>", lambda event: self._canvas_nudge(event, pitches=1))
-        self.canvas.bind("<Down>", lambda event: self._canvas_nudge(event, pitches=-1))
+        self.canvas.bind("<Left>", lambda event: self._canvas_seek(event, steps=-1))
+        self.canvas.bind("<Right>", lambda event: self._canvas_seek(event, steps=1))
+        self.canvas.bind("<Up>", lambda event: self._canvas_jump(event, direction=-1))
+        self.canvas.bind("<Down>", lambda event: self._canvas_jump(event, direction=1))
+        self.canvas.bind("<KeyPress-q>", lambda event: self._canvas_trim(event, side="left"))
+        self.canvas.bind("<KeyPress-w>", lambda event: self._canvas_trim(event, side="right"))
+        self.canvas.bind("<KeyPress-e>", lambda event: self._canvas_move_track(event, offset=-1))
+        self.canvas.bind("<KeyPress-r>", lambda event: self._canvas_move_track(event, offset=1))
+        modifier = "Command" if sys.platform == "darwin" else "Control"
         self.canvas.bind(
-            "<Shift-Up>",
+            f"<{modifier}-Left>",
+            lambda event: self._canvas_nudge(event, beats=-1),
+        )
+        self.canvas.bind(
+            f"<{modifier}-Right>",
+            lambda event: self._canvas_nudge(event, beats=1),
+        )
+        self.canvas.bind(
+            f"<{modifier}-Up>",
+            lambda event: self._canvas_nudge(event, pitches=1),
+        )
+        self.canvas.bind(
+            f"<{modifier}-Down>",
+            lambda event: self._canvas_nudge(event, pitches=-1),
+        )
+        self.canvas.bind(
+            f"<{modifier}-Shift-Up>",
             lambda event: self._canvas_nudge(event, pitches=12),
         )
         self.canvas.bind(
-            "<Shift-Down>",
+            f"<{modifier}-Shift-Down>",
             lambda event: self._canvas_nudge(event, pitches=-12),
         )
         self.canvas.bind(
-            "<Alt-Up>",
+            f"<{modifier}-Alt-Up>",
             lambda event: self._canvas_nudge(event, velocity=5),
         )
         self.canvas.bind(
-            "<Alt-Down>",
+            f"<{modifier}-Alt-Down>",
             lambda event: self._canvas_nudge(event, velocity=-5),
-        )
-        self.canvas.bind(
-            "<Control-Left>",
-            lambda event: self._canvas_nudge(event, durations=-1),
-        )
-        self.canvas.bind(
-            "<Control-Right>",
-            lambda event: self._canvas_nudge(event, durations=1),
         )
         self.after(80, lambda: self._yview("moveto", "0.37"))
 
@@ -989,6 +1013,7 @@ class SequencerView(ctk.CTkFrame):
         for button in (
             self.quantize_button,
             self.duplicate_button,
+            self.split_button,
             self.delete_note_button,
         ):
             button.configure(state=state)
@@ -1094,6 +1119,152 @@ class SequencerView(ctk.CTkFrame):
         self.on_change()
         self.on_status(f"已量化 {len(notes)} 个音符")
 
+    def copy_selected_notes(self) -> bool:
+        notes = sorted(self._selected_notes(), key=lambda note: (note.start, note.pitch))
+        if not notes:
+            self.on_status("请先选择音符")
+            return False
+        origin = notes[0].start
+        self._note_clipboard = [
+            (note.pitch, note.start - origin, note.duration, note.velocity)
+            for note in notes
+        ]
+        self.on_status(f"已复制 {len(notes)} 个音符")
+        return True
+
+    def cut_selected_notes(self) -> None:
+        notes = self._selected_notes()
+        if not notes or not self.copy_selected_notes():
+            return
+        note_ids = {note.id for note in notes}
+        self._push_undo()
+        self.selected_track.notes = [
+            note for note in self.selected_track.notes if note.id not in note_ids
+        ]
+        self._clear_selection()
+        self._rebuild_tracks()
+        self.redraw()
+        self.on_change()
+        self.on_status(f"已剪切 {len(notes)} 个音符")
+
+    def paste_notes_at_playhead(self) -> None:
+        if not self._note_clipboard:
+            self.on_status("剪贴板中没有音符")
+            return
+        latest_end = max(
+            offset + duration
+            for _pitch, offset, duration, _velocity in self._note_clipboard
+        )
+        if self.insert_beat + latest_end > self.song.bars * 4:
+            self.on_status("播放头右侧空间不足，无法粘贴")
+            return
+        self._push_undo()
+        pasted = [
+            Note(
+                pitch=pitch,
+                start=self.insert_beat + offset,
+                duration=duration,
+                velocity=velocity,
+            )
+            for pitch, offset, duration, velocity in self._note_clipboard
+        ]
+        self.selected_track.notes.extend(pasted)
+        self._set_selection({note.id for note in pasted}, pasted[0].id)
+        self._rebuild_tracks()
+        self.redraw()
+        self.on_change()
+        self._preview_note(pasted[0])
+        self.on_status(f"已粘贴 {len(pasted)} 个音符")
+
+    def split_selected_at_playhead(self) -> None:
+        notes = self._selected_notes()
+        if not notes:
+            self.on_status("请先选择需要分割的音符")
+            return
+        split = self._snap_beat(self.insert_beat)
+        minimum = self._snap_size()
+        splittable = [
+            note
+            for note in notes
+            if note.start + minimum <= split <= note.start + note.duration - minimum
+        ]
+        if not splittable:
+            self.on_status("播放头需要位于所选音符内部")
+            return
+        self._push_undo()
+        created = []
+        for note in splittable:
+            end = note.start + note.duration
+            note.duration = split - note.start
+            created.append(
+                Note(
+                    pitch=note.pitch,
+                    start=split,
+                    duration=end - split,
+                    velocity=note.velocity,
+                )
+            )
+        self.selected_track.notes.extend(created)
+        selected = {note.id for note in splittable + created}
+        self._set_selection(selected, created[0].id)
+        self._rebuild_tracks()
+        self.redraw()
+        self.on_change()
+        self.on_status(f"已在播放头处分割 {len(splittable)} 个音符")
+
+    def trim_selected_to_playhead(self, side: str) -> None:
+        notes = self._selected_notes()
+        if not notes:
+            self.on_status("请先选择需要裁剪的音符")
+            return
+        split = self._snap_beat(self.insert_beat)
+        minimum = self._snap_size()
+        trimmable = [
+            note
+            for note in notes
+            if note.start + minimum <= split <= note.start + note.duration - minimum
+        ]
+        if not trimmable:
+            self.on_status("播放头需要位于所选音符内部")
+            return
+        self._push_undo()
+        for note in trimmable:
+            end = note.start + note.duration
+            if side == "left":
+                note.start = split
+                note.duration = end - split
+            else:
+                note.duration = split - note.start
+        self._sync_note_controls()
+        self.redraw()
+        self.on_change()
+        label = "左侧" if side == "left" else "右侧"
+        self.on_status(f"已裁掉 {len(trimmable)} 个音符的播放头{label}")
+
+    def move_selected_to_track(self, offset: int) -> None:
+        notes = self._selected_notes()
+        if not notes:
+            self.on_status("请先选择音符")
+            return
+        target_index = self.selected_track_index + offset
+        if not 0 <= target_index < len(self.song.tracks):
+            self.on_status("已经位于最上方轨道" if offset < 0 else "已经位于最下方轨道")
+            return
+        self._push_undo()
+        note_ids = {note.id for note in notes}
+        self.selected_track.notes = [
+            note for note in self.selected_track.notes if note.id not in note_ids
+        ]
+        self.song.tracks[target_index].notes.extend(notes)
+        self.selected_track_index = target_index
+        self.instrument_var.set(self.selected_track.instrument)
+        self._rebuild_tracks()
+        self._sync_note_controls()
+        self.redraw()
+        self.on_change()
+        direction = "上一条" if offset < 0 else "下一条"
+        self.on_status(f"已将 {len(notes)} 个音符移到{direction}轨道")
+
     def duplicate_selected_note(self) -> None:
         notes = self._selected_notes()
         if not notes:
@@ -1124,7 +1295,7 @@ class SequencerView(ctk.CTkFrame):
         self.redraw()
         self.on_change()
         self._preview_note(duplicates[0])
-        self.on_status(f"已复制 {len(duplicates)} 个音符")
+        self.on_status(f"已重复 {len(duplicates)} 个音符")
 
     def nudge_selected(
         self,
@@ -1136,9 +1307,7 @@ class SequencerView(ctk.CTkFrame):
     ) -> None:
         notes = self._selected_notes()
         if not notes:
-            if beats:
-                target = self._snap_beat(self.insert_beat + beats)
-                self._set_edit_cursor(target, clear_selection=False)
+            self.on_status("请先选择音符")
             return
         earliest = min(note.start for note in notes)
         latest = max(note.start + note.duration for note in notes)
@@ -1178,6 +1347,33 @@ class SequencerView(ctk.CTkFrame):
         self.redraw()
         self.on_change()
         self.on_status(f"已调整 {len(notes)} 个音符")
+
+    def move_playhead(self, steps: int) -> None:
+        target = self._snap_beat(self.insert_beat + steps * self._snap_size())
+        self._set_edit_cursor(target, clear_selection=False)
+
+    def jump_to_adjacent_edit(self, direction: int) -> None:
+        points = sorted(
+            {
+                point
+                for note in self.selected_track.notes
+                for point in (note.start, note.start + note.duration)
+            }
+        )
+        epsilon = 1e-6
+        if direction < 0:
+            candidates = [point for point in points if point < self.insert_beat - epsilon]
+            target = candidates[-1] if candidates else 0.0
+        else:
+            candidates = [point for point in points if point > self.insert_beat + epsilon]
+            target = candidates[0] if candidates else self.song.bars * 4.0
+        self._set_edit_cursor(target, clear_selection=False)
+
+    def jump_to_timeline_edge(self, end: bool) -> None:
+        self._set_edit_cursor(
+            self.song.bars * 4.0 if end else 0.0,
+            clear_selection=False,
+        )
 
     def select_track(self, index: int) -> None:
         self._reset_delete_track()
@@ -1343,6 +1539,22 @@ class SequencerView(ctk.CTkFrame):
 
     def _canvas_play(self, _event=None) -> str:
         self.on_play()
+        return "break"
+
+    def _canvas_seek(self, _event=None, *, steps: int) -> str:
+        self.move_playhead(steps)
+        return "break"
+
+    def _canvas_jump(self, _event=None, *, direction: int) -> str:
+        self.jump_to_adjacent_edit(direction)
+        return "break"
+
+    def _canvas_trim(self, _event=None, *, side: str) -> str:
+        self.trim_selected_to_playhead(side)
+        return "break"
+
+    def _canvas_move_track(self, _event=None, *, offset: int) -> str:
+        self.move_selected_to_track(offset)
         return "break"
 
     def _canvas_nudge(

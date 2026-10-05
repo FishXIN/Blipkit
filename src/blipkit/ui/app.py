@@ -291,46 +291,76 @@ class BlipkitApp(ctk.CTk):
         modifier = "Command" if sys.platform == "darwin" else "Control"
         self.bind_all(f"<{modifier}-s>", self._shortcut_save)
         self.bind_all(f"<{modifier}-o>", self._shortcut_open)
+        self.bind_all(f"<{modifier}-n>", self._shortcut_new)
+        self.bind_all(f"<{modifier}-e>", self._shortcut_export)
+        self.bind_all(f"<{modifier}-i>", self._shortcut_import)
         self.bind_all("<space>", self._shortcut_play)
         self.bind_all("<Delete>", self._shortcut_delete)
         self.bind_all("<BackSpace>", self._shortcut_delete)
+        self.bind_all(f"<{modifier}-c>", self._shortcut_copy)
+        self.bind_all(f"<{modifier}-x>", self._shortcut_cut)
+        self.bind_all(f"<{modifier}-v>", self._shortcut_paste)
+        self.bind_all(f"<{modifier}-b>", self._shortcut_split)
         self.bind_all(f"<{modifier}-d>", self._shortcut_duplicate)
         self.bind_all(f"<{modifier}-z>", self._shortcut_undo)
         self.bind_all(f"<{modifier}-a>", self._shortcut_select_all)
+        self.bind_all(f"<{modifier}-Shift-z>", self._shortcut_redo)
+        self.bind_all(f"<{modifier}-equal>", lambda event: self._shortcut_zoom(event, 4))
+        self.bind_all(f"<{modifier}-plus>", lambda event: self._shortcut_zoom(event, 4))
+        self.bind_all(f"<{modifier}-minus>", lambda event: self._shortcut_zoom(event, -4))
+        self.bind_all("<Left>", lambda event: self._shortcut_seek(event, steps=-1))
+        self.bind_all("<Right>", lambda event: self._shortcut_seek(event, steps=1))
+        self.bind_all("<Up>", lambda event: self._shortcut_jump(event, direction=-1))
+        self.bind_all("<Down>", lambda event: self._shortcut_jump(event, direction=1))
+        self.bind_all("<Home>", lambda event: self._shortcut_edge(event, end=False))
+        self.bind_all("<End>", lambda event: self._shortcut_edge(event, end=True))
         self.bind_all(
-            "<Command-Shift-z>" if sys.platform == "darwin" else "<Control-y>",
-            self._shortcut_redo,
+            "<KeyPress-q>",
+            lambda event: self._shortcut_trim(event, side="left"),
         )
-        self.bind_all("<KeyPress-v>", lambda event: self._shortcut_tool(event, "选择"))
-        self.bind_all("<KeyPress-b>", lambda event: self._shortcut_tool(event, "画笔"))
-        self.bind_all("<KeyPress-q>", self._shortcut_quantize)
-        self.bind_all("<Left>", lambda event: self._shortcut_nudge(event, beats=-1))
-        self.bind_all("<Right>", lambda event: self._shortcut_nudge(event, beats=1))
-        self.bind_all("<Up>", lambda event: self._shortcut_nudge(event, pitches=1))
-        self.bind_all("<Down>", lambda event: self._shortcut_nudge(event, pitches=-1))
         self.bind_all(
-            "<Shift-Up>",
+            "<KeyPress-w>",
+            lambda event: self._shortcut_trim(event, side="right"),
+        )
+        self.bind_all(
+            "<KeyPress-e>",
+            lambda event: self._shortcut_move_track(event, offset=-1),
+        )
+        self.bind_all(
+            "<KeyPress-r>",
+            lambda event: self._shortcut_move_track(event, offset=1),
+        )
+        self.bind_all(
+            f"<{modifier}-Left>",
+            lambda event: self._shortcut_nudge(event, beats=-1),
+        )
+        self.bind_all(
+            f"<{modifier}-Right>",
+            lambda event: self._shortcut_nudge(event, beats=1),
+        )
+        self.bind_all(
+            f"<{modifier}-Up>",
+            lambda event: self._shortcut_nudge(event, pitches=1),
+        )
+        self.bind_all(
+            f"<{modifier}-Down>",
+            lambda event: self._shortcut_nudge(event, pitches=-1),
+        )
+        self.bind_all(
+            f"<{modifier}-Shift-Up>",
             lambda event: self._shortcut_nudge(event, pitches=12),
         )
         self.bind_all(
-            "<Shift-Down>",
+            f"<{modifier}-Shift-Down>",
             lambda event: self._shortcut_nudge(event, pitches=-12),
         )
         self.bind_all(
-            "<Alt-Up>",
+            f"<{modifier}-Alt-Up>",
             lambda event: self._shortcut_nudge(event, velocity=5),
         )
         self.bind_all(
-            "<Alt-Down>",
+            f"<{modifier}-Alt-Down>",
             lambda event: self._shortcut_nudge(event, velocity=-5),
-        )
-        self.bind_all(
-            "<Control-Left>",
-            lambda event: self._shortcut_nudge(event, durations=-1),
-        )
-        self.bind_all(
-            "<Control-Right>",
-            lambda event: self._shortcut_nudge(event, durations=1),
         )
 
     @staticmethod
@@ -356,6 +386,24 @@ class BlipkitApp(ctk.CTk):
         self.open_project()
         return "break"
 
+    def _shortcut_new(self, event=None):
+        if event is not None and self._is_text_input(event):
+            return None
+        self.new_project()
+        return "break"
+
+    def _shortcut_export(self, event=None):
+        if event is not None and self._is_text_input(event):
+            return None
+        self.export_all()
+        return "break"
+
+    def _shortcut_import(self, event=None):
+        if event is not None and self._is_text_input(event):
+            return None
+        self.import_midi()
+        return "break"
+
     def _shortcut_play(self, event=None):
         if event is not None and self._is_text_input(event):
             return None
@@ -376,6 +424,34 @@ class BlipkitApp(ctk.CTk):
             self.current_view.duplicate_selected_note()
         return "break"
 
+    def _shortcut_copy(self, event=None):
+        if event is not None and self._is_text_input(event):
+            return None
+        if hasattr(self.current_view, "copy_selected_notes"):
+            self.current_view.copy_selected_notes()
+        return "break"
+
+    def _shortcut_cut(self, event=None):
+        if event is not None and self._is_text_input(event):
+            return None
+        if hasattr(self.current_view, "cut_selected_notes"):
+            self.current_view.cut_selected_notes()
+        return "break"
+
+    def _shortcut_paste(self, event=None):
+        if event is not None and self._is_text_input(event):
+            return None
+        if hasattr(self.current_view, "paste_notes_at_playhead"):
+            self.current_view.paste_notes_at_playhead()
+        return "break"
+
+    def _shortcut_split(self, event=None):
+        if event is not None and self._is_text_input(event):
+            return None
+        if hasattr(self.current_view, "split_selected_at_playhead"):
+            self.current_view.split_selected_at_playhead()
+        return "break"
+
     def _shortcut_undo(self, event=None):
         if event is not None and self._is_text_input(event):
             return None
@@ -390,25 +466,59 @@ class BlipkitApp(ctk.CTk):
             self.current_view.redo()
         return "break"
 
-    def _shortcut_tool(self, event, tool: str):
-        if self._is_text_input(event):
-            return None
-        if isinstance(self.current_view, SequencerView):
-            self.current_view.set_tool(tool)
-        return "break"
-
-    def _shortcut_quantize(self, event=None):
-        if event is not None and self._is_text_input(event):
-            return None
-        if hasattr(self.current_view, "quantize_selected"):
-            self.current_view.quantize_selected()
-        return "break"
-
     def _shortcut_select_all(self, event=None):
         if event is not None and self._is_text_input(event):
             return None
         if hasattr(self.current_view, "select_all_notes"):
             self.current_view.select_all_notes()
+            return "break"
+        return None
+
+    def _shortcut_seek(self, event, *, steps: int):
+        if self._is_text_input(event):
+            return None
+        if isinstance(self.current_view, SequencerView):
+            self.current_view.move_playhead(steps)
+            return "break"
+        return None
+
+    def _shortcut_jump(self, event, *, direction: int):
+        if self._is_text_input(event):
+            return None
+        if isinstance(self.current_view, SequencerView):
+            self.current_view.jump_to_adjacent_edit(direction)
+            return "break"
+        return None
+
+    def _shortcut_edge(self, event, *, end: bool):
+        if self._is_text_input(event):
+            return None
+        if isinstance(self.current_view, SequencerView):
+            self.current_view.jump_to_timeline_edge(end)
+            return "break"
+        return None
+
+    def _shortcut_trim(self, event, *, side: str):
+        if self._is_text_input(event):
+            return None
+        if isinstance(self.current_view, SequencerView):
+            self.current_view.trim_selected_to_playhead(side)
+            return "break"
+        return None
+
+    def _shortcut_move_track(self, event, *, offset: int):
+        if self._is_text_input(event):
+            return None
+        if isinstance(self.current_view, SequencerView):
+            self.current_view.move_selected_to_track(offset)
+            return "break"
+        return None
+
+    def _shortcut_zoom(self, event, amount: int):
+        if self._is_text_input(event):
+            return None
+        if isinstance(self.current_view, SequencerView):
+            self.current_view.zoom_horizontal(amount)
             return "break"
         return None
 
