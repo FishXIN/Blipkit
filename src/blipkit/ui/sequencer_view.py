@@ -619,7 +619,7 @@ class SequencerView(ctk.CTkFrame):
             f"<{modifier}-Alt-Down>",
             lambda event: self._canvas_nudge(event, velocity=-5),
         )
-        self.after(80, lambda: self._yview("moveto", "0.37"))
+        self.after(1, self._center_selected_track_pitch)
 
         self._rebuild_tracks()
 
@@ -1382,6 +1382,7 @@ class SequencerView(ctk.CTkFrame):
         self._clear_selection()
         self._rebuild_tracks()
         self.redraw()
+        self.after(1, self._center_selected_track_pitch)
 
     def add_track(self) -> None:
         self._push_undo()
@@ -2130,6 +2131,18 @@ class SequencerView(ctk.CTkFrame):
         self._hover_beat = None
         self.canvas.delete("hover_preview")
         self._refresh_canvas_overlays()
+
+    def _center_selected_track_pitch(self) -> None:
+        notes = self.selected_track.notes
+        if not notes or not hasattr(self, "canvas"):
+            return
+        self.canvas.update_idletasks()
+        center_pitch = (min(note.pitch for note in notes) + max(note.pitch for note in notes)) / 2
+        center_y = self.RULER_H + (self.PITCH_HIGH - center_pitch + 0.5) * self.ROW_H
+        total = self._timeline_height()
+        viewport = max(1, self.canvas.winfo_height())
+        target = max(0.0, min(center_y - viewport / 2, max(0.0, total - viewport)))
+        self._yview("moveto", target / max(1.0, total))
 
     def _refresh_canvas_overlays(self) -> None:
         self._draw_timeline_overlay()

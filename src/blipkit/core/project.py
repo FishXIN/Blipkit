@@ -13,6 +13,7 @@ from typing import Any
 
 from .models import AssetInfo, Note, ProjectMetadata, SFXPatch, Song, Track
 from .sfx_synth import get_preset
+from .showcase import create_showcase_songs
 
 PROJECT_SUFFIX = ".bkproj"
 
@@ -190,6 +191,22 @@ class BlipkitProject:
             self.record("sfx.save", "sfx", patch.id, patch.to_dict())
         self.save_metadata()
         return path
+
+    def ensure_showcase_song(self) -> Song | None:
+        songs = self.ensure_showcase_songs()
+        return songs[0] if songs else None
+
+    def ensure_showcase_songs(self) -> list[Song]:
+        if self.metadata.name != "Starter":
+            return []
+        existing = {song.name: song for _path, song in self.load_songs()}
+        songs = []
+        for bundled in create_showcase_songs():
+            song = existing.get(bundled.name, bundled)
+            if bundled.name not in existing:
+                self.save_song(song, record=False)
+            songs.append(song)
+        return songs
 
     def load_songs(self) -> list[tuple[Path, Song]]:
         result = []

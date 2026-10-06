@@ -78,18 +78,21 @@ class BlipkitApp(ctk.CTk):
             self._window_icon = None
 
     def _initial_project(self) -> BlipkitProject:
+        project = None
         if self.settings.last_project:
             path = Path(self.settings.last_project)
             if (path / "project.json").is_file():
                 try:
-                    return BlipkitProject.open(path)
+                    project = BlipkitProject.open(path)
                 except (OSError, ValueError):
                     pass
-        root = data_dir() / "Projects" / "Starter.bkproj"
-        if (root / "project.json").is_file():
-            project = BlipkitProject.open(root)
-        else:
-            project = BlipkitProject.create(root, "Starter", template="RPG")
+        if project is None:
+            root = data_dir() / "Projects" / "Starter.bkproj"
+            if (root / "project.json").is_file():
+                project = BlipkitProject.open(root)
+            else:
+                project = BlipkitProject.create(root, "Starter", template="RPG")
+        project.ensure_showcase_songs()
         self.settings.remember_project(project.path)
         return project
 

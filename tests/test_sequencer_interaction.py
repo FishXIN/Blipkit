@@ -51,6 +51,8 @@ def editor(tk_root):
     )
     view.pack(fill="both", expand=True)
     tk_root.update()
+    tk_root.after(5, tk_root.quit)
+    tk_root.mainloop()
     view.canvas.yview_moveto(0)
     tk_root.update()
     yield SimpleNamespace(root=tk_root, view=view, note=note, events=events)
@@ -124,6 +126,23 @@ def test_ruler_remains_clickable_after_vertical_scroll(editor) -> None:
     ruler_bounds = view.canvas.bbox("ruler_overlay")
     assert ruler_bounds is not None
     assert ruler_bounds[1] <= view.canvas.canvasy(0) + 1
+
+
+def test_track_selection_centers_its_note_range(editor) -> None:
+    view = editor.view
+    view.song.tracks[1].notes.append(Note(pitch=38, start=0, duration=1))
+
+    view.select_track(1)
+    editor.root.after(5, editor.root.quit)
+    editor.root.mainloop()
+    low_track_top = view.canvas.canvasy(0)
+
+    view.select_track(0)
+    editor.root.after(5, editor.root.quit)
+    editor.root.mainloop()
+    high_track_top = view.canvas.canvasy(0)
+
+    assert low_track_top > high_track_top
 
 
 def test_space_plays_without_scrolling_focused_canvas(editor) -> None:

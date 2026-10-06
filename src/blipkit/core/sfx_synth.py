@@ -8,6 +8,7 @@ from dataclasses import replace
 
 import numpy as np
 
+from .dsp import band_limited_wave, limit_peak, one_pole_lowpass
 from .models import SFXPatch
 
 
@@ -19,12 +20,14 @@ PRESETS: dict[str, SFXPatch] = {
     "Click": _patch(
         "Click",
         "UI",
-        waveform="Square",
+        waveform="Triangle",
         start_freq=900,
         end_freq=620,
         duration=0.08,
         decay=0.025,
         release=0.025,
+        lowpass_cutoff=0.72,
+        volume=0.62,
     ),
     "Confirm": _patch(
         "Confirm",
@@ -57,12 +60,13 @@ PRESETS: dict[str, SFXPatch] = {
     "Error": _patch(
         "Error",
         "UI",
-        waveform="Square",
+        waveform="Triangle",
         start_freq=240,
         end_freq=145,
         duration=0.28,
-        noise=0.08,
+        noise=0.04,
         release=0.1,
+        lowpass_cutoff=0.58,
     ),
     "Laser": _patch(
         "Laser",
@@ -73,6 +77,8 @@ PRESETS: dict[str, SFXPatch] = {
         duration=0.34,
         bend=1.8,
         release=0.08,
+        lowpass_cutoff=0.68,
+        volume=0.7,
     ),
     "Explosion": _patch(
         "Explosion",
@@ -183,12 +189,13 @@ PRESETS: dict[str, SFXPatch] = {
     "Coin": _patch(
         "Coin",
         "Pickup",
-        waveform="Square",
+        waveform="Triangle",
         start_freq=880,
         end_freq=1480,
         duration=0.22,
         bend=0.8,
         release=0.08,
+        lowpass_cutoff=0.8,
     ),
     "Power Up": _patch(
         "Power Up",
@@ -199,6 +206,8 @@ PRESETS: dict[str, SFXPatch] = {
         duration=0.65,
         bend=0.7,
         release=0.15,
+        lowpass_cutoff=0.7,
+        volume=0.7,
     ),
     "Unlock": _patch(
         "Unlock",
@@ -339,19 +348,13 @@ def synthesize(patch: SFXPatch, sample_rate: int = 44100) -> np.ndarray:
         seconds = np.arange(frames, dtype=np.float64) / float(sample_rate)
         vibrato = np.sin(2.0 * np.pi * max(0.1, patch.vibrato_rate) * seconds)
         frequency *= np.power(2.0, patch.vibrato_depth * vibrato / 12.0)
-    phase = 2.0 * np.pi * np.cumsum(frequency) / sample_rate
+    phase_step = frequency / sample_rate
+    cycle = np.cumsum(phase_step)
     waveform = patch.waveform.lower()
-    if waveform == "square":
-        tone = np.where(np.sin(phase) >= 0.0, 1.0, -1.0)
-    elif waveform == "sawtooth":
-        tone = 2.0 * np.mod(phase / (2.0 * np.pi), 1.0) - 1.0
-    elif waveform == "triangle":
-        cycle = np.mod(phase / (2.0 * np.pi), 1.0)
-        tone = 2.0 * np.abs(2.0 * cycle - 1.0) - 1.0
-    elif waveform == "noise":
+    if waveform == "noise":
         tone = np.zeros(frames, dtype=np.float64)
     else:
-        tone = np.sin(phase)
+        tone = band_limited_wave(cycle, phase_step, waveform)
 
     rng = np.random.default_rng(patch.seed)
     noise = rng.uniform(-1.0, 1.0, frames)
@@ -359,15 +362,13 @@ def synthesize(patch: SFXPatch, sample_rate: int = 44100) -> np.ndarray:
     signal = tone * (1.0 - noise_amount * 0.75) + noise * noise_amount
 
     if noise_amount > 0.2:
-        smoothing = max(1, int(sample_rate / max(200.0, patch.start_freq * 4.0)))
-        if smoothing > 1:
-            kernel = np.ones(smoothing, dtype=np.float64) / smoothing
-            signal = np.convolve(signal, kernel, mode="same")
+        noise_cutoff = max(500.0, min(9000.0, patch.start_freq * 5.0))
+        signal = one_pole_lowpass(signal, noise_cutoff, sample_rate)
 
     if patch.lowpass_cutoff < 0.995:
-        smoothing = 1 + int((1.0 - max(0.05, patch.lowpass_cutoff)) * 36)
-        kernel = np.ones(smoothing, dtype=np.float64) / smoothing
-        signal = np.convolve(signal, kernel, mode="same")
+        amount = max(0.05, min(1.0, patch.lowpass_cutoff))
+        cutoff = 180.0 + amount**2 * (sample_rate * 0.42 - 180.0)
+        signal = one_pole_lowpass(signal, cutoff, sample_rate)
 
     if patch.crush > 0.001:
         bits = max(3, int(round(16 - min(1.0, patch.crush) * 12)))
@@ -376,7 +377,7 @@ def synthesize(patch: SFXPatch, sample_rate: int = 44100) -> np.ndarray:
 
     signal *= _adsr(patch, frames, sample_rate)
     signal *= min(1.0, max(0.0, patch.volume))
-    signal = np.tanh(signal * 1.25)
+    signal = limit_peak(signal, ceiling=0.92)
     if not np.all(np.isfinite(signal)):
         raise ValueError("SFX synthesis produced invalid samples")
     return signal.astype(np.float32)

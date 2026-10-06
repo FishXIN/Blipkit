@@ -17,9 +17,11 @@ from blipkit.core.midi_io import export_song_midi, import_song_midi
 from blipkit.core.models import Note, Song, Track
 from blipkit.core.music_assistant import chord_to_midi, is_in_scale
 from blipkit.core.project import BlipkitProject
-from blipkit.core.sequencer import render_song
-from blipkit.core.sfx_synth import get_preset, mutate_patch, synthesize
+from blipkit.core.sequencer import render_note, render_song
+from blipkit.core.sfx_synth import get_preset, mutate_patch, preset_names, synthesize
+from blipkit.core.showcase import SHOWCASE_SONG_NAMES, create_showcase_songs
 from blipkit.core.soundbank import BUILTIN_PRESETS
+from blipkit.core.soundbank import get_preset as get_instrument_preset
 
 
 class SoundbankTests(unittest.TestCase):
@@ -31,6 +33,33 @@ class SoundbankTests(unittest.TestCase):
         self.assertEqual(chord_to_midi("Dm7/F"), [53, 62, 69, 72])
         self.assertTrue(is_in_scale(60, "C", "Major"))
         self.assertFalse(is_in_scale(61, "C", "Major"))
+
+    def test_all_instrument_presets_render_cleanly(self):
+        note = Note(pitch=60, start=0, duration=0.25, velocity=100)
+        rendered_voices = set()
+        for preset in BUILTIN_PRESETS:
+            rendered = render_note(note, 120, preset, sample_rate=8000)
+            self.assertTrue(np.all(np.isfinite(rendered)), preset.name)
+            self.assertLessEqual(float(np.max(np.abs(rendered))), 0.81, preset.name)
+            rendered_voices.add(rendered.tobytes())
+        self.assertEqual(len(rendered_voices), len(BUILTIN_PRESETS))
+
+    def test_bright_presets_limit_harsh_high_frequency_energy(self):
+        sample_rate = 44100
+        note = Note(pitch=72, start=0, duration=2, velocity=100)
+        for name in ("Square Lead", "Saw Lead", "Trumpet"):
+            rendered = render_note(
+                note,
+                120,
+                get_instrument_preset(name),
+                sample_rate=sample_rate,
+            )
+            spectrum = np.abs(np.fft.rfft(rendered * np.hanning(len(rendered)))) ** 2
+            frequencies = np.fft.rfftfreq(len(rendered), 1.0 / sample_rate)
+            ratio = float(
+                spectrum[frequencies > 10000].sum() / max(spectrum.sum(), 1e-12)
+            )
+            self.assertLess(ratio, 0.012, name)
 
 
 class SynthesisTests(unittest.TestCase):
@@ -52,6 +81,12 @@ class SynthesisTests(unittest.TestCase):
         rendered = synthesize(first, sample_rate=8000)
         self.assertTrue(np.all(np.isfinite(rendered)))
 
+    def test_all_sfx_presets_render_below_the_clean_ceiling(self):
+        for name in preset_names():
+            rendered = synthesize(get_preset(name), sample_rate=8000)
+            self.assertTrue(np.all(np.isfinite(rendered)), name)
+            self.assertLessEqual(float(np.max(np.abs(rendered))), 0.921, name)
+
     def test_song_loop_length_and_stereo(self):
         song = Song(
             name="loop",
@@ -69,6 +104,7 @@ class SynthesisTests(unittest.TestCase):
         rendered = render_song(song, sample_rate=8000, loop_only=True, stereo=True)
         self.assertEqual(rendered.shape, (16000, 2))
         self.assertGreater(float(np.max(np.abs(rendered))), 0.01)
+        self.assertTrue(np.array_equal(rendered[:, 0], rendered[:, 1]))
 
     def test_solo_tracks_override_non_solo_tracks(self):
         song = Song(
@@ -85,6 +121,37 @@ class SynthesisTests(unittest.TestCase):
         song.tracks[1].muted = True
         expected = render_song(song, sample_rate=8000, loop_only=True, stereo=False)
         self.assertTrue(np.array_equal(solo_mix, expected))
+
+    def test_dense_chord_uses_clean_peak_management(self):
+        notes = [
+            Note(pitch=pitch, start=0, duration=2, velocity=115)
+            for pitch in (48, 52, 55, 60, 64, 67, 72)
+        ]
+        song = Song(
+            name="dense",
+            bpm=120,
+            bars=1,
+            loop_end=4,
+            tracks=[Track(name="lead", instrument="Saw Lead", notes=notes)],
+        )
+        rendered = render_song(song, stereo=False)
+        self.assertLessEqual(float(np.max(np.abs(rendered))), 0.941)
+        self.assertFalse(np.any(np.abs(rendered) >= 0.95))
+
+    def test_showcase_songs_are_full_arrangements_with_clean_loops(self):
+        songs = create_showcase_songs()
+        self.assertEqual(tuple(song.name for song in songs), SHOWCASE_SONG_NAMES)
+        for song in songs:
+            notes = [note for track in song.tracks for note in track.notes]
+            self.assertEqual(song.bars, 16, song.name)
+            self.assertGreaterEqual(len(song.tracks), 6, song.name)
+            self.assertGreaterEqual(len(notes), 150, song.name)
+            self.assertGreaterEqual(min(note.pitch for note in notes), 36, song.name)
+            self.assertLessEqual(max(note.pitch for note in notes), 84, song.name)
+            rendered = render_song(song, sample_rate=8000, loop_only=True, stereo=True)
+            self.assertGreater(float(np.sqrt(np.mean(rendered**2))), 0.07, song.name)
+            self.assertLessEqual(float(np.max(np.abs(rendered))), 0.941, song.name)
+            self.assertEqual(float(np.max(np.abs(rendered[-80:]))), 0.0, song.name)
 
     def test_wav_export(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -123,6 +190,21 @@ class SynthesisTests(unittest.TestCase):
 
 
 class ProjectTests(unittest.TestCase):
+    def test_starter_project_installs_showcase_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            project = BlipkitProject.create(
+                Path(folder) / "Starter",
+                "Starter",
+                template="Blank",
+            )
+            first = project.ensure_showcase_songs()
+            second = project.ensure_showcase_songs()
+            names = [song.name for _path, song in project.load_songs()]
+            self.assertEqual([song.id for song in first], [song.id for song in second])
+            for name in SHOWCASE_SONG_NAMES:
+                self.assertEqual(names.count(name), 1)
+            project.close()
+
     def test_project_round_trip_and_snapshot(self):
         with tempfile.TemporaryDirectory() as folder:
             project = BlipkitProject.create(
