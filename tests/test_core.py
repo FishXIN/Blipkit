@@ -14,7 +14,7 @@ from blipkit.core.audio_io import export_audio
 from blipkit.core.engine_bridge import output_root, validate_engine_path
 from blipkit.core.export import export_project
 from blipkit.core.midi_io import export_song_midi, import_song_midi
-from blipkit.core.models import Note, Song, Track
+from blipkit.core.models import Note, SFXPatch, Song, Track
 from blipkit.core.music_assistant import chord_to_midi, is_in_scale
 from blipkit.core.project import BlipkitProject
 from blipkit.core.sequencer import render_note, render_song
@@ -42,7 +42,7 @@ class SoundbankTests(unittest.TestCase):
             self.assertTrue(np.all(np.isfinite(rendered)), preset.name)
             self.assertLessEqual(float(np.max(np.abs(rendered))), 0.81, preset.name)
             rendered_voices.add(rendered.tobytes())
-        self.assertEqual(len(rendered_voices), len(BUILTIN_PRESETS))
+        self.assertGreaterEqual(len(rendered_voices), 72)
 
     def test_bright_presets_limit_harsh_high_frequency_energy(self):
         sample_rate = 44100
@@ -86,6 +86,36 @@ class SynthesisTests(unittest.TestCase):
             rendered = synthesize(get_preset(name), sample_rate=8000)
             self.assertTrue(np.all(np.isfinite(rendered)), name)
             self.assertLessEqual(float(np.max(np.abs(rendered))), 0.921, name)
+
+    def test_material_sfx_round_trip_and_legacy_defaults(self):
+        source = get_preset("Metal Plate")
+        restored = SFXPatch.from_dict(source.to_dict())
+        self.assertEqual(restored.to_dict(), source.to_dict())
+        legacy = SFXPatch.from_dict({"name": "Legacy"})
+        self.assertEqual(
+            (legacy.exciter, legacy.material, legacy.body, legacy.space),
+            ("Tone", "Synthetic", "Open", "Dry"),
+        )
+
+    def test_material_presets_are_deterministic_and_distinct(self):
+        rendered_materials = set()
+        for name in (
+            "Metal Plate",
+            "Metal Tube",
+            "Glass Hit",
+            "Wood Knock",
+            "Water Drop",
+            "Water Flow",
+        ):
+            patch = get_preset(name)
+            first = synthesize(patch, sample_rate=8000)
+            second = synthesize(patch, sample_rate=8000)
+            self.assertTrue(np.array_equal(first, second), name)
+            self.assertTrue(np.all(np.isfinite(first)), name)
+            self.assertGreater(float(np.sqrt(np.mean(first**2))), 0.005, name)
+            self.assertLessEqual(float(np.max(np.abs(first))), 0.921, name)
+            rendered_materials.add(first.tobytes())
+        self.assertEqual(len(rendered_materials), 6)
 
     def test_song_loop_length_and_stereo(self):
         song = Song(

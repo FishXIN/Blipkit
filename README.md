@@ -10,9 +10,9 @@
 
 ## 当前可用能力
 
-- Piano Roll 多轨编排，支持框选/多选、批量编辑、轨道混音、和弦插入、节拍器与循环试听
+- 多轨编排总览与 Piano Roll 双视图，支持框选、多选、轨道混音、和弦和循环试听
 - MIDI 导入导出、可变小节数、吸附、缩放、量化、力度编辑和完整撤销/重做
-- 80 个轻量内置程序化音色，覆盖芯片、键盘、弦乐、木管、铜管和民族音色
+- 80 个内置音色：62 个真实 SoundFont 采样音色和 18 个专用芯片音色
 - 22 个游戏 SFX 预设，支持 ADSR、颤音、低通、位深压缩、自动试听和可撤销变体
 - `.bkproj` 工程目录、自动保存、手动快照、SQLite 50 步操作历史和 ZIP 备份
 - WAV / OGG / MP3 / FLAC 导出
@@ -25,6 +25,7 @@
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
+.venv/bin/pip install --no-deps "tinysoundfont==0.3.7"
 .venv/bin/python main.py
 ```
 
@@ -38,6 +39,7 @@ python3 -m venv .venv
 ## 主要操作
 
 - 默认「选择」模式：在顶部标尺单击或拖动播放头，网格单击只负责选择
+- `Cmd/Ctrl + 1/2` 切换多轨编排与钢琴卷帘；双击编排中的音符进入单轨精修
 - 拖动空白框选音符，`Shift` 点击追加选择；拖动所选音符可批量移动
 - 双击空白快速写入音符；切换「画笔」模式后拖动可控制音符长度
 - 拖动音符右边缘调整时长；右键音符或选中后按 `Delete` 删除
@@ -111,7 +113,8 @@ Blipkit/
     └── test_core.py
 ```
 
-当前内置音色采用程序化合成以保持包体和启动速度；外部 SF2 导入及真实采样音色属于后续版本范围。
+真实乐器由内置 MuseScore General SoundFont 离线渲染，芯片分类保留程序化合成。
+SoundFont 的 MIT 许可证与鸣谢见 `assets/soundfonts/MuseScore_General_License.md`。
 
 产品边界见 [docs/PRODUCT.md](docs/PRODUCT.md)，开发顺序见 [ROADMAP.md](ROADMAP.md)，
 版本记录见 [CHANGELOG.md](CHANGELOG.md)。

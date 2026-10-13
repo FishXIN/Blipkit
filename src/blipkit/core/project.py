@@ -13,7 +13,7 @@ from typing import Any
 
 from .models import AssetInfo, Note, ProjectMetadata, SFXPatch, Song, Track
 from .sfx_synth import get_preset
-from .showcase import create_showcase_songs
+from .showcase import SHOWCASE_VERSION_LABEL, create_showcase_songs
 
 PROJECT_SUFFIX = ".bkproj"
 
@@ -36,10 +36,10 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 def _template_song(name: str, template: str) -> Song:
     colors = ("#006CFF", "#18A57A", "#B66B18", "#8B5CF6")
     tracks = [
-        Track(name="主旋律", instrument="Square Lead", color=colors[0]),
+        Track(name="主旋律", instrument="Grand Piano", color=colors[0]),
         Track(name="和声", instrument="Strings Ensemble", volume=0.58, color=colors[1]),
-        Track(name="低音", instrument="Square Bass", volume=0.68, color=colors[2]),
-        Track(name="节奏", instrument="Noise Snare", volume=0.42, color=colors[3]),
+        Track(name="低音", instrument="Double Bass", volume=0.68, color=colors[2]),
+        Track(name="节奏", instrument="Acoustic Snare", volume=0.42, color=colors[3]),
     ]
     song = Song(name=name, tracks=tracks)
     if template == "Blank":
@@ -202,9 +202,14 @@ class BlipkitProject:
         existing = {song.name: song for _path, song in self.load_songs()}
         songs = []
         for bundled in create_showcase_songs():
-            song = existing.get(bundled.name, bundled)
-            if bundled.name not in existing:
+            song = existing.get(bundled.name)
+            is_current = song is not None and any(
+                marker.label == SHOWCASE_VERSION_LABEL for marker in song.mood_markers
+            )
+            if not is_current:
+                song = bundled
                 self.save_song(song, record=False)
+            assert song is not None
             songs.append(song)
         return songs
 

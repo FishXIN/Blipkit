@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import queue
 import sys
+import threading
 import tkinter as tk
+from collections import OrderedDict
 from pathlib import Path
 from tkinter import filedialog
 
 import customtkinter as ctk
+import numpy as np
 
 from blipkit import __version__
 from blipkit.core.config import AppSettings, data_dir
@@ -23,7 +27,7 @@ from blipkit.core.soundbank import get_preset as get_instrument_preset
 
 from . import tokens as T
 from .library_view import LibraryView
-from .sequencer_view import SequencerView
+from .sequencer_view import SequencerPlaybackPlan, SequencerView
 from .settings_view import SettingsView
 from .sfx_view import SFXView
 from .widgets import action_button, icon_button, ui_font
@@ -51,7 +55,17 @@ class BlipkitApp(ctk.CTk):
         self.last_editor_mode = "music"
         self.dirty = False
         self._playing = False
+        self._playback_loading = False
+        self._playback_request_id = 0
         self._playback_after_id: str | None = None
+        self._music_preview_cache = OrderedDict()
+        self._music_render_results = queue.SimpleQueue()
+        self._music_render_active_key: str | None = None
+        self._music_render_pending_plan: SequencerPlaybackPlan | None = None
+        self._music_render_warm_after_id: str | None = None
+        self._music_render_poll_after_id: str | None = None
+        self._playback_request = None
+        self._closing = False
         self._nav_buttons: dict[str, ctk.CTkButton] = {}
         self._asset_buttons: list[ctk.CTkButton] = []
 
@@ -64,6 +78,13 @@ class BlipkitApp(ctk.CTk):
         self._bind_shortcuts()
         self.refresh_assets()
         self.show_view("music")
+        self._music_render_poll_after_id = self.after(16, self._poll_music_render_results)
+        threading.Thread(
+            target=self.player.prepare,
+            args=(self.project.metadata.sample_rate,),
+            name="blipkit-audio-prepare",
+            daemon=True,
+        ).start()
         self.after(self.settings.autosave_seconds * 1000, self._autosave)
 
     def _apply_window_icon(self) -> None:
@@ -311,6 +332,14 @@ class BlipkitApp(ctk.CTk):
         self.bind_all(f"<{modifier}-equal>", lambda event: self._shortcut_zoom(event, 4))
         self.bind_all(f"<{modifier}-plus>", lambda event: self._shortcut_zoom(event, 4))
         self.bind_all(f"<{modifier}-minus>", lambda event: self._shortcut_zoom(event, -4))
+        self.bind_all(
+            f"<{modifier}-1>",
+            lambda event: self._shortcut_editor_view(event, "编排"),
+        )
+        self.bind_all(
+            f"<{modifier}-2>",
+            lambda event: self._shortcut_editor_view(event, "钢琴卷帘"),
+        )
         self.bind_all("<Left>", lambda event: self._shortcut_seek(event, steps=-1))
         self.bind_all("<Right>", lambda event: self._shortcut_seek(event, steps=1))
         self.bind_all("<Up>", lambda event: self._shortcut_jump(event, direction=-1))
@@ -525,6 +554,14 @@ class BlipkitApp(ctk.CTk):
             return "break"
         return None
 
+    def _shortcut_editor_view(self, event, value: str):
+        if self._is_text_input(event):
+            return None
+        if isinstance(self.current_view, SequencerView):
+            self.current_view.set_editor_view(value)
+            return "break"
+        return None
+
     def _shortcut_nudge(
         self,
         event,
@@ -604,6 +641,7 @@ class BlipkitApp(ctk.CTk):
         self.current_view.pack(fill="both", expand=True)
         self.refresh_assets()
         self._update_status_meta()
+        self._schedule_music_preview(40)
 
     def refresh_assets(self) -> None:
         for child in self.asset_list.winfo_children():
@@ -692,6 +730,7 @@ class BlipkitApp(ctk.CTk):
     def mark_dirty(self) -> None:
         self.dirty = True
         self.project_label.configure(text=self.project.metadata.name + "  •")
+        self._schedule_music_preview(500)
 
     def _commit_current_editor(self) -> None:
         if isinstance(self.current_view, SFXView):
@@ -738,33 +777,240 @@ class BlipkitApp(ctk.CTk):
             self.save_current()
             self.set_status("当前资产已保存")
 
+    def _schedule_music_preview(self, delay_ms: int) -> None:
+        if self._closing:
+            return
+        if self._music_render_warm_after_id is not None:
+            try:
+                self.after_cancel(self._music_render_warm_after_id)
+            except (ValueError, tk.TclError):
+                pass
+        self._music_render_warm_after_id = self.after(
+            delay_ms,
+            self._warm_current_music,
+        )
+
+    def _warm_current_music(self) -> None:
+        self._music_render_warm_after_id = None
+        if (
+            self._playing
+            or self._playback_loading
+            or not isinstance(self.current_view, SequencerView)
+        ):
+            return
+        try:
+            plan = self.current_view.create_playback_plan(
+                self.project.metadata.sample_rate
+            )
+        except Exception:
+            return
+        if self._cached_music_preview(plan) is None:
+            self._request_music_render(plan)
+
+    @staticmethod
+    def _music_preview_cache_path(plan: SequencerPlaybackPlan) -> Path:
+        safe_key = plan.cache_key.replace(":", "_")
+        return data_dir() / "cache" / f"music_preview_{safe_key}.npy"
+
+    def _remember_music_preview(self, cache_key: str, samples):
+        self._music_preview_cache[cache_key] = samples
+        self._music_preview_cache.move_to_end(cache_key)
+        while len(self._music_preview_cache) > 2:
+            self._music_preview_cache.popitem(last=False)
+        return samples
+
+    def _cached_music_preview(self, plan: SequencerPlaybackPlan):
+        cached = self._music_preview_cache.get(plan.cache_key)
+        if cached is not None:
+            self._music_preview_cache.move_to_end(plan.cache_key)
+            return cached
+        path = self._music_preview_cache_path(plan)
+        if not path.is_file():
+            return None
+        try:
+            samples = np.load(path, mmap_mode="r", allow_pickle=False)
+        except (OSError, ValueError):
+            path.unlink(missing_ok=True)
+            return None
+        if samples.dtype != np.float32 or samples.ndim not in (1, 2) or not len(samples):
+            path.unlink(missing_ok=True)
+            return None
+        return self._remember_music_preview(plan.cache_key, samples)
+
+    def _write_music_preview_cache(
+        self,
+        plan: SequencerPlaybackPlan,
+        samples,
+    ) -> None:
+        path = self._music_preview_cache_path(plan)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix(".tmp")
+        try:
+            with temp.open("wb") as output:
+                np.save(output, np.asarray(samples, dtype=np.float32), allow_pickle=False)
+            temp.replace(path)
+            cached = sorted(
+                path.parent.glob("music_preview_*.npy"),
+                key=lambda item: item.stat().st_mtime,
+            )
+            for stale in cached[:-6]:
+                stale.unlink(missing_ok=True)
+        finally:
+            temp.unlink(missing_ok=True)
+
+    def _request_music_render(self, plan: SequencerPlaybackPlan) -> None:
+        if self._cached_music_preview(plan) is not None:
+            return
+        if self._music_render_active_key is not None:
+            if self._music_render_active_key != plan.cache_key:
+                self._music_render_pending_plan = plan
+            return
+        self._music_render_active_key = plan.cache_key
+        threading.Thread(
+            target=self._render_music_plan,
+            args=(plan,),
+            name="blipkit-preview-render",
+            daemon=True,
+        ).start()
+
+    def _render_music_plan(self, plan: SequencerPlaybackPlan) -> None:
+        try:
+            samples = plan.render_full()
+            self._write_music_preview_cache(plan, samples)
+            error = None
+        except Exception as exc:
+            samples = None
+            error = exc
+        self._music_render_results.put((plan, samples, error))
+
+    def _poll_music_render_results(self) -> None:
+        if self._closing:
+            return
+        while True:
+            try:
+                plan, samples, error = self._music_render_results.get_nowait()
+            except queue.Empty:
+                break
+            if self._music_render_active_key == plan.cache_key:
+                self._music_render_active_key = None
+            if error is None and samples is not None:
+                self._remember_music_preview(plan.cache_key, samples)
+            request = self._playback_request
+            if request is not None and request[1].cache_key == plan.cache_key:
+                request_id, request_plan, request_view = request
+                if error is not None:
+                    self._cancel_pending_playback(f"预览失败：{error}")
+                elif samples is not None:
+                    self._start_music_playback(
+                        request_id,
+                        request_plan,
+                        request_view,
+                        samples,
+                    )
+
+        if (
+            self._music_render_active_key is None
+            and self._music_render_pending_plan is not None
+        ):
+            pending = self._music_render_pending_plan
+            self._music_render_pending_plan = None
+            if self._cached_music_preview(pending) is None:
+                self._request_music_render(pending)
+        self._music_render_poll_after_id = self.after(
+            16,
+            self._poll_music_render_results,
+        )
+
+    def _cancel_pending_playback(self, status: str | None = None) -> None:
+        self._playback_request_id += 1
+        self._playback_request = None
+        self._playback_loading = False
+        if self.current_view is not None and hasattr(
+            self.current_view,
+            "set_playback_state",
+        ):
+            self.current_view.set_playback_state(False)
+        if status:
+            self.set_status(status)
+
+    def _start_music_playback(
+        self,
+        request_id: int,
+        plan: SequencerPlaybackPlan,
+        view: SequencerView,
+        rendered,
+    ) -> None:
+        if (
+            request_id != self._playback_request_id
+            or self.current_view is not view
+            or not self._playback_loading
+        ):
+            return
+        try:
+            samples = plan.output_from(rendered)
+        except Exception as exc:
+            self._cancel_pending_playback(f"预览失败：{exc}")
+            return
+        self._playback_request = None
+        self._begin_audio_playback(samples, plan.sample_rate, view)
+
+    def _begin_audio_playback(self, samples, sample_rate: int, view) -> None:
+        try:
+            started = self.player.play(samples, sample_rate)
+        except Exception as exc:
+            self._cancel_pending_playback(f"预览失败：{exc}")
+            return
+        if not started:
+            self._cancel_pending_playback("系统未找到可用的音频播放器")
+            return
+        self._playback_loading = False
+        self._playing = True
+        if hasattr(view, "set_playback_state"):
+            view.set_playback_state(True)
+        if hasattr(view, "start_playhead"):
+            view.start_playhead(self.player.current_time)
+        duration = max(0.05, len(samples) / float(sample_rate))
+        self._playback_after_id = self.after(
+            int(duration * 1000) + 80,
+            self._playback_finished,
+        )
+        self.set_status("正在播放")
+
     def toggle_playback(self) -> None:
-        if self._playing:
+        if self._playing or self._playback_loading:
             self.stop_playback()
             return
         if not hasattr(self.current_view, "render_audio"):
             self.set_status("当前视图没有可预览的音频")
             return
-        self.set_status("正在生成预览…")
+        view = self.current_view
+        sample_rate = self.project.metadata.sample_rate
+        self._playback_request_id += 1
+        request_id = self._playback_request_id
+        self._playback_loading = True
+        if hasattr(view, "set_playback_state"):
+            view.set_playback_state(True)
+        if isinstance(view, SequencerView):
+            try:
+                plan = view.create_playback_plan(sample_rate)
+            except Exception as exc:
+                self._cancel_pending_playback(f"预览失败：{exc}")
+                return
+            self._playback_request = (request_id, plan, view)
+            cached = self._cached_music_preview(plan)
+            if cached is not None:
+                self._start_music_playback(request_id, plan, view, cached)
+            else:
+                self.set_status("正在准备播放…")
+                self._request_music_render(plan)
+            return
+        self.set_status("正在准备播放…")
         self.update_idletasks()
         try:
-            samples = self.current_view.render_audio(self.project.metadata.sample_rate)
-            if self.player.play(samples, self.project.metadata.sample_rate):
-                self._playing = True
-                if hasattr(self.current_view, "set_playback_state"):
-                    self.current_view.set_playback_state(True)
-                if hasattr(self.current_view, "start_playhead"):
-                    self.current_view.start_playhead()
-                duration = self.current_view.duration()
-                self._playback_after_id = self.after(
-                    int(duration * 1000) + 80,
-                    self._playback_finished,
-                )
-                self.set_status("正在播放")
-            else:
-                self.set_status("系统未找到可用的音频播放器")
+            samples = view.render_audio(sample_rate)
+            self._begin_audio_playback(samples, sample_rate, view)
         except Exception as exc:
-            self.set_status(f"预览失败：{exc}")
+            self._cancel_pending_playback(f"预览失败：{exc}")
 
     def preview_note(self, pitch: int, instrument: str, velocity: int = 100) -> None:
         self.stop_playback()
@@ -834,10 +1080,13 @@ class BlipkitApp(ctk.CTk):
             self.stop_playback(completed=True)
 
     def stop_playback(self, completed: bool = False) -> None:
+        self._playback_request_id += 1
+        self._playback_request = None
+        self._playback_loading = False
         if self._playback_after_id is not None:
             try:
                 self.after_cancel(self._playback_after_id)
-            except ValueError:
+            except (ValueError, tk.TclError):
                 pass
             self._playback_after_id = None
         if hasattr(self, "player"):
@@ -958,10 +1207,20 @@ class BlipkitApp(ctk.CTk):
             self.status_var.set(message)
 
     def _close(self) -> None:
+        self._closing = True
         try:
+            for after_id in (
+                self._music_render_warm_after_id,
+                self._music_render_poll_after_id,
+            ):
+                if after_id is not None:
+                    try:
+                        self.after_cancel(after_id)
+                    except (ValueError, tk.TclError):
+                        pass
             if self.dirty:
                 self.save_current()
-            self.player.stop()
+            self.player.close()
             self.project.close()
         finally:
             self.destroy()

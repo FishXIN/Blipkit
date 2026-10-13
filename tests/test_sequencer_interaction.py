@@ -50,6 +50,7 @@ def editor(tk_root):
         on_export_midi=lambda: None,
     )
     view.pack(fill="both", expand=True)
+    view.set_editor_view("钢琴卷帘")
     tk_root.update()
     tk_root.after(5, tk_root.quit)
     tk_root.mainloop()
@@ -143,6 +144,65 @@ def test_track_selection_centers_its_note_range(editor) -> None:
     high_track_top = view.canvas.canvasy(0)
 
     assert low_track_top > high_track_top
+
+
+def test_arrangement_renders_all_tracks_and_separates_selection_from_seek(editor) -> None:
+    view = editor.view
+    second_note = Note(pitch=38, start=0.5, duration=1)
+    view.song.tracks[1].notes.append(second_note)
+    view.set_editor_view("编排")
+    editor.root.update()
+    arrangement = view.arrangement_view
+
+    assert len(arrangement._note_items) == 2
+    view._set_edit_cursor(3.0, seek=False)
+    arrangement._timeline_click(
+        SimpleNamespace(
+            x=30,
+            y=arrangement.RULER_H + arrangement.ROW_H + 20,
+        )
+    )
+
+    assert view.selected_track_index == 1
+    assert view.insert_beat == 3.0
+
+    arrangement._timeline_click(
+        SimpleNamespace(
+            x=2 * arrangement.SUBDIVISIONS * arrangement.cell_w,
+            y=10,
+        )
+    )
+    arrangement._timeline_release(None)
+
+    assert view.insert_beat == pytest.approx(2.0)
+
+
+def test_arrangement_double_click_opens_note_in_piano_roll(editor) -> None:
+    view = editor.view
+    second_note = Note(pitch=38, start=0.5, duration=1)
+    view.song.tracks[1].notes.append(second_note)
+    view.set_editor_view("编排")
+    editor.root.update()
+    arrangement = view.arrangement_view
+    item = next(
+        item
+        for item, (_index, note) in arrangement._note_items.items()
+        if note.id == second_note.id
+    )
+    x1, y1, x2, y2 = arrangement.timeline.bbox(item)
+
+    arrangement._timeline_double_click(
+        SimpleNamespace(
+            x=round((x1 + x2) / 2),
+            y=round((y1 + y2) / 2),
+        )
+    )
+    editor.root.update()
+
+    assert view.view_var.get() == "钢琴卷帘"
+    assert view.selected_track_index == 1
+    assert view.selected_note_ids == {second_note.id}
+    assert view.insert_beat == second_note.start
 
 
 def test_space_plays_without_scrolling_focused_canvas(editor) -> None:

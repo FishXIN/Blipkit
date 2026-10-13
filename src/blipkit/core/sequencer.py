@@ -8,6 +8,10 @@ import numpy as np
 
 from .dsp import band_limited_wave, limit_peak, one_pole_lowpass
 from .models import Note, Song, Track
+from .sample_engine import (
+    is_available as sample_engine_available,
+)
+from .sample_engine import render_sampled_note, render_sampled_tracks, uses_samples
 from .soundbank import InstrumentPreset, get_preset
 
 
@@ -191,6 +195,8 @@ def render_note(
     preset: InstrumentPreset,
     sample_rate: int = 44100,
 ) -> np.ndarray:
+    if uses_samples(preset) and sample_engine_available():
+        return render_sampled_note(note, bpm, preset, sample_rate)
     seconds_per_beat = 60.0 / max(20, int(bpm))
     body_seconds = max(0.02, note.duration * seconds_per_beat)
     total_seconds = body_seconds + preset.release
@@ -236,6 +242,13 @@ def render_track(
     return output
 
 
+def _master_output(mix: np.ndarray) -> np.ndarray:
+    peak = float(np.max(np.abs(mix))) if mix.size else 0.0
+    if 1e-9 < peak < 0.82:
+        mix = mix * min(1.5, 0.82 / peak)
+    return limit_peak(mix)
+
+
 def render_song(
     song: Song,
     sample_rate: int = 44100,
@@ -243,28 +256,46 @@ def render_song(
     stereo: bool = True,
 ) -> np.ndarray:
     total_beats = max(float(song.bars * 4), float(song.loop_end))
-    frames = max(1, int(total_beats * 60.0 / song.bpm * sample_rate))
     solo_tracks = [track for track in song.tracks if track.soloed and not track.muted]
     active_tracks = solo_tracks or [track for track in song.tracks if not track.muted]
+    sampled_tracks = []
+    procedural_tracks = []
+    sampled_enabled = sample_engine_available()
+    for track in active_tracks:
+        preset = get_preset(track.instrument)
+        if sampled_enabled and uses_samples(preset):
+            sampled_tracks.append(track)
+        else:
+            procedural_tracks.append(track)
     layers = [
         render_track(track, song.bpm, total_beats, sample_rate)
-        for track in active_tracks
+        for track in procedural_tracks
     ]
+    sampled_mix = render_sampled_tracks(
+        sampled_tracks,
+        song.bpm,
+        total_beats,
+        sample_rate,
+    )
 
     if stereo:
-        mix = np.zeros((frames, 2), dtype=np.float32)
-        pans = np.linspace(-0.24, 0.24, len(layers)) if len(layers) > 1 else [0.0]
+        mix = sampled_mix
+        pans = (
+            np.linspace(-0.24, 0.24, len(layers))
+            if len(layers) > 1
+            else [0.0] if layers else []
+        )
         for layer, pan in zip(layers, pans, strict=True):
             left_gain = math.sqrt(1.0 - float(pan))
             right_gain = math.sqrt(1.0 + float(pan))
             mix[: len(layer), 0] += layer * left_gain
             mix[: len(layer), 1] += layer * right_gain
-        mix = limit_peak(mix)
+        mix = _master_output(mix)
     else:
-        mix = np.zeros(frames, dtype=np.float32)
+        mix = sampled_mix.mean(axis=1)
         for layer in layers:
             mix[: len(layer)] += layer
-        mix = limit_peak(mix)
+        mix = _master_output(mix)
 
     if loop_only:
         start = int(song.loop_start * 60.0 / song.bpm * sample_rate)

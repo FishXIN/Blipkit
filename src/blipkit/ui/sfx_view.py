@@ -1,4 +1,4 @@
-"""Procedural SFX design workspace."""
+"""Procedural SFX node-design workspace."""
 
 from __future__ import annotations
 
@@ -11,7 +11,14 @@ from collections.abc import Callable
 import customtkinter as ctk
 import numpy as np
 
-from blipkit.core.models import SFXPatch
+from blipkit.core.models import SFXNode, SFXPatch
+from blipkit.core.sfx_graph import (
+    NODE_GROUPS,
+    NODE_SPECS,
+    ensure_patch_graph,
+    node_param,
+    node_spec,
+)
 from blipkit.core.sfx_synth import (
     categories,
     get_preset,
@@ -23,6 +30,7 @@ from blipkit.core.sfx_synth import (
 )
 
 from . import tokens as T
+from .sfx_node_editor import SFXNodeEditor, display_choice, stored_choice
 from .widgets import LabeledSlider, action_button, ui_font
 
 
@@ -44,18 +52,20 @@ class SFXView(ctk.CTkFrame):
         self.on_status = on_status
         self.on_seek = on_seek
         self.on_play = on_play
-        self._sliders: dict[str, LabeledSlider] = {}
         self._playhead_started = 0.0
+        self._playhead_clock: Callable[[], float] | None = None
         self._playhead_after: str | None = None
         self._regenerate_after: str | None = None
         self._history_reset_after: str | None = None
         self._history_open = False
         self._pending_preview = False
+        self._selected_node_id: str | None = None
         self._undo_stack: list[SFXPatch] = []
         self._redo_stack: list[SFXPatch] = []
         self._baseline = copy.deepcopy(patch)
         self._samples = synthesize(self.patch)
         self.auto_preview_var = tk.BooleanVar(value=True)
+        self.graph_enabled_var = tk.BooleanVar(value=self.patch.graph_enabled)
 
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -69,7 +79,7 @@ class SFXView(ctk.CTkFrame):
         toolbar.grid(row=0, column=0, sticky="ew")
         toolbar.grid_propagate(False)
         toolbar.grid_rowconfigure(0, weight=1)
-        toolbar.grid_columnconfigure(8, weight=1)
+        toolbar.grid_columnconfigure(7, weight=1)
 
         self.name_var = tk.StringVar(value=self.patch.name)
         name = ctk.CTkEntry(
@@ -87,25 +97,6 @@ class SFXView(ctk.CTkFrame):
         name.bind("<FocusOut>", lambda _event: self._name_changed())
         name.bind("<Return>", lambda _event: self._name_changed())
 
-        self.waveform_var = tk.StringVar(value=self.patch.waveform)
-        waveform = ctk.CTkOptionMenu(
-            toolbar,
-            variable=self.waveform_var,
-            values=["Sine", "Square", "Sawtooth", "Triangle", "Noise"],
-            command=self._waveform_changed,
-            width=116,
-            height=T.CONTROL_H,
-            corner_radius=T.RADIUS_CONTROL,
-            fg_color=T.NAV_BG,
-            button_color=T.NAV_ACTIVE,
-            button_hover_color=T.BORDER,
-            text_color=T.TEXT,
-            dropdown_fg_color=T.SURFACE,
-            dropdown_hover_color=T.NAV_ACTIVE,
-            dropdown_text_color=T.TEXT,
-            font=ui_font(T.TEXT_13),
-        )
-        waveform.grid(row=0, column=1, padx=(0, 8))
         self.transport_button = action_button(
             toolbar,
             "▶  试听",
@@ -113,7 +104,7 @@ class SFXView(ctk.CTkFrame):
             primary=True,
             width=76,
         )
-        self.transport_button.grid(row=0, column=2, padx=(0, 8))
+        self.transport_button.grid(row=0, column=1, padx=(0, 8))
         ctk.CTkSwitch(
             toolbar,
             text="自动试听",
@@ -128,17 +119,43 @@ class SFXView(ctk.CTkFrame):
             button_hover_color=T.SURFACE,
             text_color=T.TEXT_SECONDARY,
             font=ui_font(T.TEXT_12),
+        ).grid(row=0, column=2, padx=(0, 8))
+        ctk.CTkSwitch(
+            toolbar,
+            text="节点引擎",
+            variable=self.graph_enabled_var,
+            command=self._toggle_graph,
+            width=88,
+            height=22,
+            switch_width=32,
+            switch_height=18,
+            fg_color=T.BORDER,
+            progress_color=T.ACCENT,
+            button_color=T.SURFACE,
+            button_hover_color=T.SURFACE,
+            text_color=T.TEXT_SECONDARY,
+            font=ui_font(T.TEXT_12),
         ).grid(row=0, column=3, padx=(0, 8))
         action_button(toolbar, "轻微变体", self.mutate, width=78, quiet=True).grid(
-            row=0, column=4, padx=(0, 2)
+            row=0,
+            column=4,
+            padx=(0, 2),
         )
         action_button(toolbar, "随机", self.randomize, width=58, quiet=True).grid(
-            row=0, column=5, padx=(0, 2)
+            row=0,
+            column=5,
+            padx=(0, 2),
         )
         action_button(toolbar, "回退", self.revert, width=58, quiet=True).grid(
-            row=0, column=6, padx=(0, 8)
+            row=0,
+            column=6,
+            padx=(0, 8),
         )
-        action_button(toolbar, "保存音效", self.save, width=82).grid(row=0, column=7)
+        action_button(toolbar, "保存音效", self.save, width=82).grid(
+            row=0,
+            column=8,
+            padx=(8, 16),
+        )
 
     def _build_body(self) -> None:
         body = ctk.CTkFrame(self, fg_color=T.SURFACE, corner_radius=0)
@@ -148,27 +165,65 @@ class SFXView(ctk.CTkFrame):
 
         browser = ctk.CTkFrame(
             body,
-            width=200,
+            width=180,
             fg_color=T.NAV_BG,
             corner_radius=T.RADIUS_PANEL,
         )
         browser.grid(row=0, column=0, sticky="nsew", padx=(12, 8), pady=(0, 12))
         browser.grid_propagate(False)
+        browser.grid_columnconfigure(0, weight=1)
+        browser.grid_rowconfigure(2, weight=1)
+        browser.grid_rowconfigure(5, weight=1)
+        self._build_preset_browser(browser)
+        self._build_node_palette(browser)
+
+        center = ctk.CTkFrame(body, fg_color=T.SURFACE, corner_radius=0)
+        center.grid(row=0, column=1, sticky="nsew", padx=8, pady=(0, 12))
+        center.grid_rowconfigure(0, weight=1)
+        center.grid_rowconfigure(1, minsize=174)
+        center.grid_columnconfigure(0, weight=1)
+
+        inspector = ctk.CTkFrame(
+            body,
+            width=270,
+            fg_color=T.SURFACE_ALT,
+            corner_radius=T.RADIUS_PANEL,
+        )
+        inspector.grid(row=0, column=2, sticky="nsew", padx=(8, 12), pady=(0, 12))
+        inspector.grid_propagate(False)
+        inspector.grid_rowconfigure(1, weight=1)
+        inspector.grid_columnconfigure(0, weight=1)
+        self._build_inspector_shell(inspector)
+
+        self.node_editor = SFXNodeEditor(
+            center,
+            self.patch,
+            self._node_selected,
+            lambda: self._begin_edit(force=True),
+            self._graph_changed,
+            self.on_status,
+        )
+        self.node_editor.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
+        self._build_waveform(center)
+
+    def _build_preset_browser(self, parent) -> None:
         ctk.CTkLabel(
-            browser,
+            parent,
             text="预设",
             text_color=T.TEXT,
             font=ui_font(T.TEXT_14, "bold"),
             anchor="w",
-        ).pack(fill="x", padx=16, pady=(16, 10))
-
-        self.category_var = tk.StringVar(value=categories()[0])
+        ).grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 10))
+        initial_category = (
+            self.patch.category if self.patch.category in categories() else categories()[0]
+        )
+        self.category_var = tk.StringVar(value=initial_category)
         self.category_menu = ctk.CTkOptionMenu(
-            browser,
+            parent,
             variable=self.category_var,
             values=categories(),
             command=lambda _value: self._refresh_preset_list(),
-            width=168,
+            width=148,
             height=T.CONTROL_H,
             corner_radius=T.RADIUS_CONTROL,
             fg_color=T.SURFACE,
@@ -177,110 +232,145 @@ class SFXView(ctk.CTkFrame):
             text_color=T.TEXT,
             dropdown_fg_color=T.SURFACE,
             dropdown_hover_color=T.NAV_ACTIVE,
+            dropdown_text_color=T.TEXT,
             font=ui_font(T.TEXT_13),
         )
-        self.category_menu.pack(padx=16, pady=(0, 10))
+        self.category_menu.grid(row=1, column=0, padx=16, pady=(0, 8))
         self.preset_list = ctk.CTkScrollableFrame(
-            browser,
+            parent,
             fg_color="transparent",
             corner_radius=0,
             scrollbar_button_color=T.TEXT_DISABLED,
             scrollbar_button_hover_color=T.TEXT_MUTED,
         )
-        self.preset_list.pack(fill="both", expand=True, padx=6, pady=(0, 8))
-
-        center = ctk.CTkFrame(
-            body,
-            fg_color=T.SURFACE_ALT,
-            corner_radius=T.RADIUS_PANEL,
+        self.preset_list.grid(row=2, column=0, sticky="nsew", padx=(6, 4), pady=(0, 8))
+        ctk.CTkFrame(parent, height=1, fg_color=T.BORDER).grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            padx=16,
+            pady=(4, 8),
         )
-        center.grid(row=0, column=1, sticky="nsew", padx=8, pady=(0, 12))
-        center.grid_rowconfigure(1, weight=1)
-        center.grid_columnconfigure(0, weight=1)
+
+    def _build_node_palette(self, parent) -> None:
         ctk.CTkLabel(
-            center,
-            text="波形预览",
+            parent,
+            text="添加节点",
             text_color=T.TEXT,
             font=ui_font(T.TEXT_14, "bold"),
             anchor="w",
-        ).grid(row=0, column=0, sticky="ew", padx=20, pady=(18, 8))
+        ).grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 8))
+        palette = ctk.CTkScrollableFrame(
+            parent,
+            fg_color="transparent",
+            corner_radius=0,
+            scrollbar_button_color=T.TEXT_DISABLED,
+            scrollbar_button_hover_color=T.TEXT_MUTED,
+        )
+        palette.grid(row=5, column=0, sticky="nsew", padx=(6, 4), pady=(0, 8))
+        palette.grid_columnconfigure((0, 1), weight=1)
+        row = 0
+        for group in NODE_GROUPS:
+            ctk.CTkLabel(
+                palette,
+                text=group,
+                text_color=T.TEXT_MUTED,
+                font=ui_font(T.TEXT_12),
+                anchor="w",
+            ).grid(row=row, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 4))
+            row += 1
+            kinds = [kind for kind, spec in NODE_SPECS.items() if spec.group == group]
+            for index, kind in enumerate(kinds):
+                ctk.CTkButton(
+                    palette,
+                    text=f"+  {NODE_SPECS[kind].label}",
+                    command=lambda node_kind=kind: self.node_editor.add_node(node_kind),
+                    height=30,
+                    corner_radius=T.RADIUS,
+                    border_width=1,
+                    border_color=T.BORDER,
+                    fg_color=T.SURFACE,
+                    hover_color=T.SURFACE_HOVER,
+                    text_color=T.TEXT_SECONDARY,
+                    font=ui_font(T.TEXT_12),
+                    anchor="w",
+                ).grid(
+                    row=row + index // 2,
+                    column=index % 2,
+                    sticky="ew",
+                    padx=3,
+                    pady=3,
+                )
+            row += (len(kinds) + 1) // 2
+
+    def _build_waveform(self, parent) -> None:
+        waveform_panel = ctk.CTkFrame(
+            parent,
+            fg_color=T.SURFACE_ALT,
+            corner_radius=T.RADIUS_PANEL,
+        )
+        waveform_panel.grid(row=1, column=0, sticky="nsew")
+        waveform_panel.grid_rowconfigure(1, weight=1)
+        waveform_panel.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            waveform_panel,
+            text="输出波形",
+            text_color=T.TEXT,
+            font=ui_font(T.TEXT_14, "bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 2))
         self.canvas = tk.Canvas(
-            center,
+            waveform_panel,
+            height=130,
             bg=T.SURFACE_ALT,
             highlightthickness=0,
             bd=0,
         )
-        self.canvas.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
+        self.canvas.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 12))
         self.canvas.bind("<Configure>", lambda _event: self.redraw_waveform())
 
-        controls = ctk.CTkScrollableFrame(
-            body,
-            width=300,
-            fg_color=T.SURFACE_ALT,
-            corner_radius=T.RADIUS_PANEL,
-            scrollbar_button_color=T.TEXT_DISABLED,
-            scrollbar_button_hover_color=T.TEXT_MUTED,
-        )
-        controls.grid(row=0, column=2, sticky="nsew", padx=(8, 12), pady=(0, 12))
-        ctk.CTkLabel(
-            controls,
-            text="合成参数",
+    def _build_inspector_shell(self, parent) -> None:
+        header = ctk.CTkFrame(parent, height=48, fg_color="transparent", corner_radius=0)
+        header.grid(row=0, column=0, sticky="ew")
+        header.grid_propagate(False)
+        header.grid_columnconfigure(0, weight=1)
+        self.inspector_title = ctk.CTkLabel(
+            header,
+            text="节点参数",
             text_color=T.TEXT,
             font=ui_font(T.TEXT_14, "bold"),
             anchor="w",
-        ).pack(fill="x", padx=16, pady=(16, 14))
-
-        specs = (
-            ("start_freq", "起始频率 Hz", 30.0, 2400.0, 0),
-            ("end_freq", "结束频率 Hz", 20.0, 2400.0, 0),
-            ("bend", "弯曲", 0.2, 3.0, 2),
-            ("duration", "时长 s", 0.04, 2.0, 2),
-            ("attack", "起音", 0.001, 0.5, 3),
-            ("decay", "衰减", 0.005, 0.8, 3),
-            ("sustain", "延音", 0.0, 1.0, 2),
-            ("release", "释音", 0.005, 0.8, 3),
-            ("noise", "噪声", 0.0, 1.0, 2),
-            ("vibrato_depth", "颤音深度", 0.0, 2.0, 2),
-            ("vibrato_rate", "颤音速度 Hz", 0.1, 24.0, 1),
-            ("lowpass_cutoff", "低通", 0.05, 1.0, 2),
-            ("crush", "位深压缩", 0.0, 1.0, 2),
-            ("volume", "音量", 0.0, 1.0, 2),
         )
-        for attr, label, start, end, digits in specs:
-            slider = LabeledSlider(
-                controls,
-                label,
-                start,
-                end,
-                float(getattr(self.patch, attr)),
-                lambda value, key=attr: self._parameter_changed(key, value),
-                digits=digits,
-            )
-            slider.pack(fill="x", padx=16, pady=(0, 16))
-            self._sliders[attr] = slider
-
-        seed_row = ctk.CTkFrame(controls, fg_color="transparent")
-        seed_row.pack(fill="x", padx=16, pady=(2, 16))
-        ctk.CTkLabel(
-            seed_row,
-            text="随机种子",
-            text_color=T.TEXT_SECONDARY,
-            font=ui_font(T.TEXT_12),
-        ).pack(side="left")
-        self.seed_var = tk.StringVar(value=str(self.patch.seed))
-        seed = ctk.CTkEntry(
-            seed_row,
-            width=92,
-            height=T.CONTROL_H,
-            textvariable=self.seed_var,
-            corner_radius=T.RADIUS_CONTROL,
-            border_color=T.BORDER,
-            fg_color=T.SURFACE,
-            font=ui_font(T.TEXT_13, mono=True),
+        self.inspector_title.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 8))
+        self.inspector_body = ctk.CTkScrollableFrame(
+            parent,
+            fg_color="transparent",
+            corner_radius=0,
+            scrollbar_button_color=T.TEXT_DISABLED,
+            scrollbar_button_hover_color=T.TEXT_MUTED,
         )
-        seed.pack(side="right")
-        seed.bind("<Return>", lambda _event: self._seed_changed())
-        seed.bind("<FocusOut>", lambda _event: self._seed_changed())
+        self.inspector_body.grid(row=1, column=0, sticky="nsew", padx=(0, 3))
+        footer = ctk.CTkFrame(parent, height=50, fg_color="transparent", corner_radius=0)
+        footer.grid(row=2, column=0, sticky="ew")
+        footer.grid_propagate(False)
+        footer.grid_columnconfigure((0, 1), weight=1)
+        self.disconnect_button = action_button(
+            footer,
+            "断开输入",
+            self._disconnect_selected,
+            width=94,
+            quiet=True,
+        )
+        self.disconnect_button.grid(row=0, column=0, padx=(12, 4), pady=8, sticky="ew")
+        self.delete_button = action_button(
+            footer,
+            "删除节点",
+            self._delete_selected,
+            width=94,
+            danger=True,
+        )
+        self.delete_button.grid(row=0, column=1, padx=(4, 12), pady=8, sticky="ew")
+        self._rebuild_inspector()
 
     def _refresh_preset_list(self) -> None:
         for child in self.preset_list.winfo_children():
@@ -301,6 +391,199 @@ class SFXView(ctk.CTkFrame):
             )
             button.pack(fill="x", pady=1)
 
+    def _node_selected(self, node_id: str | None) -> None:
+        self._selected_node_id = node_id
+        self._rebuild_inspector()
+
+    def _selected_node(self) -> SFXNode | None:
+        return next(
+            (
+                node
+                for node in self.patch.graph_nodes
+                if node.id == self._selected_node_id
+            ),
+            None,
+        )
+
+    def _rebuild_inspector(self) -> None:
+        if not hasattr(self, "inspector_body"):
+            return
+        for child in self.inspector_body.winfo_children():
+            child.destroy()
+        node = self._selected_node()
+        state = "normal" if node is not None else "disabled"
+        if hasattr(self, "delete_button"):
+            self.delete_button.configure(state=state)
+            self.disconnect_button.configure(state=state)
+        if node is None:
+            self.inspector_title.configure(text="节点参数")
+            ctk.CTkLabel(
+                self.inspector_body,
+                text="未选择节点",
+                text_color=T.TEXT_MUTED,
+                font=ui_font(T.TEXT_13),
+                anchor="w",
+            ).pack(fill="x", padx=16, pady=(6, 16))
+        else:
+            spec = node_spec(node.kind)
+            self.inspector_title.configure(text=spec.label)
+            for param in spec.params:
+                self._add_node_parameter(node, param)
+        self._add_global_settings()
+
+    def _add_node_parameter(self, node: SFXNode, param) -> None:
+        if param.choices:
+            row = ctk.CTkFrame(self.inspector_body, fg_color="transparent")
+            row.pack(fill="x", padx=16, pady=(0, 14))
+            ctk.CTkLabel(
+                row,
+                text=param.label,
+                text_color=T.TEXT_MUTED,
+                font=ui_font(T.TEXT_12),
+                anchor="w",
+            ).pack(fill="x", pady=(0, 5))
+            current = str(node_param(node, param.key))
+            variable = tk.StringVar(value=display_choice(current))
+            ctk.CTkOptionMenu(
+                row,
+                variable=variable,
+                values=[display_choice(value) for value in param.choices],
+                command=lambda value, node_id=node.id, item=param: (
+                    self._node_choice_changed(node_id, item, value)
+                ),
+                height=T.CONTROL_H,
+                corner_radius=T.RADIUS_CONTROL,
+                fg_color=T.SURFACE,
+                button_color=T.NAV_ACTIVE,
+                button_hover_color=T.BORDER,
+                text_color=T.TEXT,
+                dropdown_fg_color=T.SURFACE,
+                dropdown_hover_color=T.NAV_ACTIVE,
+                dropdown_text_color=T.TEXT,
+                font=ui_font(T.TEXT_13),
+            ).pack(fill="x")
+            return
+        slider = LabeledSlider(
+            self.inspector_body,
+            param.label,
+            float(param.minimum),
+            float(param.maximum),
+            float(node_param(node, param.key)),
+            lambda value, node_id=node.id, key=param.key: (
+                self._node_parameter_changed(node_id, key, value)
+            ),
+            digits=param.digits,
+        )
+        slider.pack(fill="x", padx=16, pady=(0, 16))
+
+    def _add_global_settings(self) -> None:
+        ctk.CTkFrame(self.inspector_body, height=1, fg_color=T.BORDER).pack(
+            fill="x",
+            padx=16,
+            pady=(2, 14),
+        )
+        ctk.CTkLabel(
+            self.inspector_body,
+            text="音效设置",
+            text_color=T.TEXT,
+            font=ui_font(T.TEXT_14, "bold"),
+            anchor="w",
+        ).pack(fill="x", padx=16, pady=(0, 14))
+        for attr, label, start, end, digits in (
+            ("duration", "时长 s", 0.05, 4.0, 2),
+            ("volume", "主音量", 0.0, 1.0, 2),
+        ):
+            slider = LabeledSlider(
+                self.inspector_body,
+                label,
+                start,
+                end,
+                float(getattr(self.patch, attr)),
+                lambda value, key=attr: self._global_parameter_changed(key, value),
+                digits=digits,
+            )
+            slider.pack(fill="x", padx=16, pady=(0, 16))
+        seed_row = ctk.CTkFrame(self.inspector_body, fg_color="transparent")
+        seed_row.pack(fill="x", padx=16, pady=(0, 16))
+        ctk.CTkLabel(
+            seed_row,
+            text="随机种子",
+            text_color=T.TEXT_MUTED,
+            font=ui_font(T.TEXT_12),
+        ).pack(side="left")
+        self.seed_var = tk.StringVar(value=str(self.patch.seed))
+        seed = ctk.CTkEntry(
+            seed_row,
+            width=92,
+            height=T.CONTROL_H,
+            textvariable=self.seed_var,
+            corner_radius=T.RADIUS_CONTROL,
+            border_color=T.BORDER,
+            fg_color=T.SURFACE,
+            text_color=T.TEXT,
+            font=ui_font(T.TEXT_13, mono=True),
+        )
+        seed.pack(side="right")
+        seed.bind("<Return>", lambda _event: self._seed_changed())
+        seed.bind("<FocusOut>", lambda _event: self._seed_changed())
+
+    def _node_parameter_changed(self, node_id: str, key: str, value: float) -> None:
+        node = next((item for item in self.patch.graph_nodes if item.id == node_id), None)
+        if node is None or abs(float(node_param(node, key)) - value) < 0.000001:
+            return
+        self._begin_edit()
+        node.params[key] = value
+        self._enable_graph()
+        self.node_editor.redraw()
+        self._schedule_regenerate()
+
+    def _node_choice_changed(self, node_id: str, param, display_value: str) -> None:
+        node = next((item for item in self.patch.graph_nodes if item.id == node_id), None)
+        if node is None:
+            return
+        value = stored_choice(display_value, param.choices)
+        if value == node_param(node, param.key):
+            return
+        self._begin_edit(force=True)
+        node.params[param.key] = value
+        self._enable_graph()
+        self.node_editor.redraw()
+        self._schedule_regenerate()
+
+    def _global_parameter_changed(self, attr: str, value: float) -> None:
+        if abs(float(getattr(self.patch, attr)) - value) < 0.000001:
+            return
+        self._begin_edit()
+        setattr(self.patch, attr, value)
+        self._schedule_regenerate()
+
+    def _graph_changed(self, sound_changed: bool) -> None:
+        self._enable_graph()
+        if sound_changed:
+            self._schedule_regenerate()
+        else:
+            self.on_change()
+
+    def _enable_graph(self) -> None:
+        self.patch.graph_enabled = True
+        self.graph_enabled_var.set(True)
+
+    def _toggle_graph(self) -> None:
+        enabled = bool(self.graph_enabled_var.get())
+        if enabled == self.patch.graph_enabled:
+            return
+        self._begin_edit(force=True)
+        ensure_patch_graph(self.patch)
+        self.patch.graph_enabled = enabled
+        self._schedule_regenerate()
+        self.on_status("节点引擎已开启" if enabled else "已切回兼容合成")
+
+    def _delete_selected(self) -> None:
+        self.node_editor.delete_selected()
+
+    def _disconnect_selected(self) -> None:
+        self.node_editor.disconnect_selected_input()
+
     def select_preset(self, name: str) -> None:
         self._begin_edit(force=True)
         self.set_patch(get_preset(name), mark_changed=True, preview=True)
@@ -314,11 +597,9 @@ class SFXView(ctk.CTkFrame):
     ) -> None:
         self.patch = patch
         self.name_var.set(patch.name)
-        self.waveform_var.set(patch.waveform)
         self.category_var.set(patch.category)
-        self.seed_var.set(str(patch.seed))
-        for attr, slider in self._sliders.items():
-            slider.set(float(getattr(patch, attr)))
+        self.graph_enabled_var.set(patch.graph_enabled)
+        self.node_editor.set_patch(patch)
         self._pending_preview = preview
         self._perform_regenerate()
         self._refresh_preset_list()
@@ -349,20 +630,6 @@ class SFXView(ctk.CTkFrame):
         if self.patch.name != previous:
             self.on_change()
 
-    def _waveform_changed(self, value: str) -> None:
-        if value == self.patch.waveform:
-            return
-        self._begin_edit(force=True)
-        self.patch.waveform = value
-        self._schedule_regenerate()
-
-    def _parameter_changed(self, attr: str, value: float) -> None:
-        if abs(float(getattr(self.patch, attr)) - value) < 0.000001:
-            return
-        self._begin_edit()
-        setattr(self.patch, attr, value)
-        self._schedule_regenerate()
-
     def _seed_changed(self) -> None:
         try:
             seed = int(self.seed_var.get())
@@ -386,7 +653,12 @@ class SFXView(ctk.CTkFrame):
         self._regenerate_after = None
         preview = self._pending_preview
         self._pending_preview = False
-        self._samples = synthesize(self.patch)
+        try:
+            self._samples = synthesize(self.patch)
+        except ValueError as error:
+            frames = max(16, int(max(0.03, self.patch.duration) * 44100))
+            self._samples = np.zeros(frames, dtype=np.float32)
+            self.on_status(str(error))
         self.redraw_waveform()
         if preview and self.auto_preview_var.get():
             self.on_seek()
@@ -399,7 +671,7 @@ class SFXView(ctk.CTkFrame):
             mark_changed=True,
             preview=True,
         )
-        self.on_status("已生成新的随机变体")
+        self.on_status("已随机调整节点参数")
 
     def mutate(self) -> None:
         self._begin_edit(force=True)
@@ -408,7 +680,7 @@ class SFXView(ctk.CTkFrame):
             mark_changed=True,
             preview=True,
         )
-        self.on_status("已生成轻微变体")
+        self.on_status("已生成轻微节点变体")
 
     def revert(self) -> None:
         if self.patch.to_dict() == self._baseline.to_dict():
@@ -472,31 +744,38 @@ class SFXView(ctk.CTkFrame):
         coords = []
         for index, value in enumerate(points):
             x = index * width / max(1, len(points) - 1)
-            y = mid - value * height * 0.38
+            y = mid - value * height * 0.34
             coords.extend((x, y))
         if len(coords) >= 4:
             self.canvas.create_line(*coords, fill=T.ACCENT, width=2, smooth=True)
         peak = float(np.max(np.abs(self._samples))) if len(self._samples) else 0.0
         peak_db = 20.0 * np.log10(max(peak, 0.000001))
+        engine = "节点" if self.patch.graph_enabled else "兼容"
         self.canvas.create_text(
-            10,
-            10,
+            8,
+            8,
             text=(
-                f"{self.patch.duration:0.2f}s  ·  {self.patch.waveform}"
-                f"  ·  峰值 {peak_db:0.1f} dB  ·  seed {self.patch.seed}"
+                f"{self.patch.duration:0.2f}s  ·  {engine}"
+                f"  ·  {len(self.patch.graph_nodes)} 节点"
+                f"  ·  峰值 {peak_db:0.1f} dB"
             ),
             anchor="nw",
             fill=T.DANGER if peak >= 0.98 else T.TEXT_MUTED,
             font=("SF Mono", 10),
         )
 
-    def start_playhead(self) -> None:
+    def start_playhead(self, clock: Callable[[], float] | None = None) -> None:
         self.stop_playhead()
         self._playhead_started = time.monotonic()
+        self._playhead_clock = clock
         self._animate_playhead()
 
     def _animate_playhead(self) -> None:
-        elapsed = time.monotonic() - self._playhead_started
+        elapsed = (
+            self._playhead_clock()
+            if self._playhead_clock is not None
+            else time.monotonic() - self._playhead_started
+        )
         ratio = min(1.0, elapsed / max(0.04, self.patch.duration))
         width = max(40, self.canvas.winfo_width())
         self.canvas.delete("playhead")
@@ -521,6 +800,7 @@ class SFXView(ctk.CTkFrame):
             except ValueError:
                 pass
         self._playhead_after = None
+        self._playhead_clock = None
         if hasattr(self, "canvas"):
             self.canvas.delete("playhead")
 

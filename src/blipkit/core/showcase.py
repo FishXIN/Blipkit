@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .models import Note, Song, Track
+from .models import MoodMarker, Note, Song, Track
 
 SHOWCASE_SONG_NAME = "01_霓虹远航"
 CELTIC_SONG_NAME = "02_凯尔特晨雾"
@@ -16,6 +16,7 @@ SHOWCASE_SONG_NAMES = (
     EASTERN_SONG_NAME,
     SUSPENSE_SONG_NAME,
 )
+SHOWCASE_VERSION_LABEL = "Blipkit Showcase Sampled v2"
 
 
 def _add_notes(
@@ -28,11 +29,15 @@ def _add_notes(
     )
 
 
+def _showcase_marker(bpm: int, key: str) -> list[MoodMarker]:
+    return [MoodMarker(beat=0.0, label=SHOWCASE_VERSION_LABEL, bpm=bpm, key=key)]
+
+
 def create_showcase_song() -> Song:
     """Create an original 16-bar A-minor synth-pop loop."""
     melody = Track(
         name="01 主题旋律",
-        instrument="Rhodes Electric Piano",
+        instrument="Grand Piano",
         volume=0.78,
         color="#006CFF",
     )
@@ -44,31 +49,31 @@ def create_showcase_song() -> Song:
     )
     arpeggio = Track(
         name="03 钟琴琶音",
-        instrument="Music Box",
+        instrument="Harp",
         volume=0.36,
         color="#8B5CF6",
     )
     bass = Track(
         name="04 低音",
-        instrument="Triangle Bass",
+        instrument="Double Bass",
         volume=0.68,
         color="#B66B18",
     )
     kick = Track(
         name="05 底鼓",
-        instrument="Triangle Mellow",
+        instrument="Bass Drum",
         volume=0.48,
         color="#D84A4A",
     )
     snare = Track(
         name="06 军鼓",
-        instrument="Noise Snare",
+        instrument="Acoustic Snare",
         volume=0.34,
         color="#D96C93",
     )
     hats = Track(
         name="07 踩镲",
-        instrument="Noise Hi-Hat",
+        instrument="Closed Hi-Hat",
         volume=0.2,
         color="#5D6B82",
     )
@@ -227,6 +232,7 @@ def create_showcase_song() -> Song:
         loop_start=0.0,
         loop_end=64.0,
         tracks=[melody, harmony, arpeggio, bass, kick, snare, hats],
+        mood_markers=_showcase_marker(108, "A"),
     )
 
 
@@ -237,8 +243,8 @@ def create_celtic_song() -> Song:
     harp = Track("03 竖琴分解", "Harp", 0.48, color="#9A6BC7")
     guitar = Track("04 木吉他节奏", "Acoustic Guitar", 0.34, color="#B8782A")
     drone = Track("05 大提琴持续音", "Cello", 0.32, color="#65758B")
-    bodhran = Track("06 手鼓", "Triangle Mellow", 0.42, color="#C45151")
-    clap = Track("07 拍击", "Noise Snare", 0.2, color="#D47D91")
+    bodhran = Track("06 手鼓", "Taiko Drum", 0.42, color="#C45151")
+    clap = Track("07 拍击", "Acoustic Snare", 0.2, color="#D47D91")
 
     reel_bars = (
         (74, 78, 81, 78, 76, 74, 71, 74),
@@ -335,6 +341,7 @@ def create_celtic_song() -> Song:
         bars=16,
         loop_end=64.0,
         tracks=[whistle, fiddle, harp, guitar, drone, bodhran, clap],
+        mood_markers=_showcase_marker(126, "D"),
     )
 
 
@@ -344,7 +351,7 @@ def create_pixel_song() -> Song:
     counter = Track("02 对位旋律", "GB Wave", 0.42, color="#16A085")
     arp = Track("03 方波琶音", "Square Arp", 0.34, color="#8B5CF6")
     bass = Track("04 掌机低音", "GB Bass", 0.58, color="#B66B18")
-    snare = Track("05 芯片军鼓", "Noise Snare", 0.28, color="#D84A4A")
+    snare = Track("05 芯片军鼓", "GB Noise", 0.28, color="#D84A4A")
     hats = Track("06 芯片踩镲", "GB Noise", 0.16, color="#607089")
 
     motifs = (
@@ -411,6 +418,7 @@ def create_pixel_song() -> Song:
         bars=16,
         loop_end=64.0,
         tracks=[lead, counter, arp, bass, snare, hats],
+        mood_markers=_showcase_marker(148, "C"),
     )
 
 
@@ -421,7 +429,7 @@ def create_eastern_song() -> Song:
     erhu = Track("03 二胡回应", "Erhu", 0.42, color="#3D7FB8")
     pipa = Track("04 琵琶节奏", "Pipa", 0.4, color="#B8782A")
     cello = Track("05 大提琴低音", "Cello", 0.32, color="#65758B")
-    drum = Track("06 鼓点", "Triangle Mellow", 0.34, color="#C45151")
+    drum = Track("06 鼓点", "Taiko Drum", 0.34, color="#C45151")
 
     phrases = (
         ((74, 76, 78, 81, 78), (0.0, 0.75, 1.25, 2.0, 3.0)),
@@ -498,6 +506,7 @@ def create_eastern_song() -> Song:
         bars=16,
         loop_end=64.0,
         tracks=[dizi, guzheng, erhu, pipa, cello, drum],
+        mood_markers=_showcase_marker(92, "D"),
     )
 
 
@@ -507,8 +516,8 @@ def create_suspense_song() -> Song:
     strings = Track("02 暗色弦乐", "Strings Slow Attack", 0.68, color="#3D7FB8")
     cello = Track("03 大提琴脉冲", "Cello", 0.56, color="#65758B")
     bassoon = Track("04 低音管回应", "Bassoon", 0.44, color="#92704D")
-    pulse = Track("05 低频脉冲", "Triangle Hollow", 0.5, color="#B66B18")
-    impact = Track("06 远处冲击", "Noise Snare", 0.26, color="#C45151")
+    pulse = Track("05 低频脉冲", "Double Bass", 0.5, color="#B66B18")
+    impact = Track("06 远处冲击", "Taiko Drum", 0.26, color="#C45151")
 
     chord_cycle = (
         (50, 53, 57),
@@ -563,6 +572,7 @@ def create_suspense_song() -> Song:
         bars=16,
         loop_end=64.0,
         tracks=[motif, strings, cello, bassoon, pulse, impact],
+        mood_markers=_showcase_marker(72, "D"),
     )
 
 

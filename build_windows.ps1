@@ -16,12 +16,17 @@ if (-not $SkipInstall) {
     & $Python -m pip install --upgrade pip
     & $Python -m pip install -r requirements.txt
 }
+& $Python -c "import tinysoundfont" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    & $Python -m pip install --no-deps "tinysoundfont==0.3.7"
+}
 
 $Version = (& $Python -c "from blipkit import __version__; print(__version__)").Trim()
 $Arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
 $env:PYINSTALLER_CONFIG_DIR = Join-Path $PWD ".pyinstaller"
 $Icon = Join-Path $PWD "assets\icon.ico"
 $IconPng = Join-Path $PWD "assets\icon.png"
+$SoundFonts = Join-Path $PWD "assets\soundfonts"
 
 Remove-Item -Recurse -Force build\windows, dist\windows -ErrorAction SilentlyContinue
 & $PyInstaller main.py `
@@ -33,7 +38,9 @@ Remove-Item -Recurse -Force build\windows, dist\windows -ErrorAction SilentlyCon
     --paths src `
     --icon $Icon `
     --add-data "$IconPng;assets" `
+    --add-data "$SoundFonts;assets\soundfonts" `
     --collect-all customtkinter `
+    --collect-all tinysoundfont `
     --hidden-import soundfile `
     --hidden-import lameenc `
     --exclude-module matplotlib `

@@ -18,43 +18,12 @@ class InstrumentPreset:
     detune_cents: float = 0.0
     vibrato_cents: float = 0.0
     vibrato_rate: float = 5.0
+    gm_program: int | None = None
+    drum_key: int | None = None
+    is_drum_kit: bool = False
 
 
 _GROUPS = {
-    "Chiptune": [
-        "Square Lead",
-        "Square Bass",
-        "Square Pad",
-        "Square Arp",
-        "Square Bright",
-        "Square Warm",
-        "Square Pulse 25%",
-        "Square Pulse 12%",
-        "Saw Lead",
-        "Saw Bass",
-        "Saw Brass",
-        "Saw Strings",
-        "Saw Supersaw",
-        "Saw Aggressive",
-        "Saw Soft",
-        "Saw Sub",
-        "Triangle Bell",
-        "Triangle Bass",
-        "Triangle Flute",
-        "Triangle Pad",
-        "Triangle Mellow",
-        "Triangle Hollow",
-        "Noise Snare",
-        "Noise Hi-Hat",
-        "NES Piano",
-        "NES Organ",
-        "NES Choir",
-        "NES Lead",
-        "GB Square",
-        "GB Wave",
-        "GB Noise",
-        "GB Bass",
-    ],
     "Keyboard": [
         "Grand Piano",
         "Grand Piano Mellow",
@@ -112,12 +81,126 @@ _GROUPS = {
         "Dizi",
         "Shakuhachi",
         "Koto",
+        "Bagpipe",
+        "Fiddle",
+        "Whistle",
+        "Sitar",
+        "Banjo",
+        "Shamisen",
     ],
+    "Percussion": [
+        "Standard Drum Kit",
+        "Acoustic Snare",
+        "Closed Hi-Hat",
+        "Bass Drum",
+        "Taiko Drum",
+        "Tinkle Bell",
+        "Woodblock",
+        "Steel Drums",
+    ],
+    "Chiptune": [
+        "Square Lead",
+        "Square Bass",
+        "Square Pad",
+        "Square Arp",
+        "Square Pulse 25%",
+        "Saw Lead",
+        "Saw Bass",
+        "Saw Strings",
+        "Saw Supersaw",
+        "Triangle Bell",
+        "Triangle Bass",
+        "Triangle Pad",
+        "Triangle Mellow",
+        "NES Piano",
+        "NES Lead",
+        "GB Square",
+        "GB Wave",
+        "GB Noise",
+    ],
+}
+
+_GM_PROGRAMS = {
+    "Grand Piano": 0,
+    "Grand Piano Mellow": 0,
+    "Upright Piano": 1,
+    "Soft Piano": 0,
+    "Honky Tonk Piano": 3,
+    "Rhodes Electric Piano": 4,
+    "Wurlitzer": 4,
+    "Clavinet": 7,
+    "Harpsichord": 6,
+    "Celesta": 8,
+    "Glockenspiel": 9,
+    "Music Box": 10,
+    "Pipe Organ": 19,
+    "Church Organ": 19,
+    "Accordion": 21,
+    "Harmonica": 22,
+    "Strings Ensemble": 48,
+    "Strings Slow Attack": 49,
+    "Strings Pizzicato": 45,
+    "Solo Violin": 40,
+    "Violin Tremolo": 44,
+    "Viola": 41,
+    "Cello": 42,
+    "Cello Pizzicato": 45,
+    "Double Bass": 43,
+    "Harp": 46,
+    "Mandolin": 25,
+    "Acoustic Guitar": 25,
+    "Flute": 73,
+    "Pan Flute": 75,
+    "Piccolo": 72,
+    "Oboe": 68,
+    "English Horn": 69,
+    "Clarinet": 71,
+    "Bassoon": 70,
+    "Ocarina": 79,
+    "Trumpet": 56,
+    "Trumpet Muted": 59,
+    "French Horn": 60,
+    "Trombone": 57,
+    "Tuba": 58,
+    "Brass Section": 61,
+    "Guzheng": 107,
+    "Erhu": 110,
+    "Pipa": 106,
+    "Dizi": 77,
+    "Shakuhachi": 77,
+    "Koto": 107,
+    "Bagpipe": 109,
+    "Fiddle": 110,
+    "Whistle": 78,
+    "Sitar": 104,
+    "Banjo": 105,
+    "Shamisen": 106,
+    "Taiko Drum": 116,
+    "Tinkle Bell": 112,
+    "Woodblock": 115,
+    "Steel Drums": 114,
+}
+
+_DRUM_KEYS = {
+    "Acoustic Snare": 38,
+    "Closed Hi-Hat": 42,
+    "Bass Drum": 36,
 }
 
 
 def _profile(name: str, category: str) -> InstrumentPreset:
     lower = name.lower()
+    if category == "Percussion":
+        return InstrumentPreset(
+            name,
+            category,
+            "noise" if name in _DRUM_KEYS or name == "Standard Drum Kit" else "triangle",
+            0.001,
+            0.12,
+            0.5,
+            decay=0.05,
+            sustain=0.05,
+        )
     if "noise" in lower:
         release = 0.035 if "hi-hat" in lower else 0.1
         brightness = 0.82 if "hi-hat" in lower else 0.48
@@ -324,6 +407,9 @@ def _personalize(preset: InstrumentPreset) -> InstrumentPreset:
         decay=max(0.03, preset.decay * (0.96 + (signature % 5) * 0.02)),
         detune_cents=preset.detune_cents + detune_offset,
         vibrato_rate=preset.vibrato_rate * (0.96 + (signature % 3) * 0.04),
+        gm_program=_GM_PROGRAMS.get(preset.name),
+        drum_key=_DRUM_KEYS.get(preset.name),
+        is_drum_kit=preset.name == "Standard Drum Kit" or preset.name in _DRUM_KEYS,
     )
 
 
@@ -333,6 +419,22 @@ BUILTIN_PRESETS: list[InstrumentPreset] = [
     for name in names
 ]
 PRESETS_BY_NAME: dict[str, InstrumentPreset] = {preset.name: preset for preset in BUILTIN_PRESETS}
+_LEGACY_PRESET_ALIASES = {
+    "Square Bright": "Square Lead",
+    "Square Warm": "Square Pad",
+    "Square Pulse 12%": "Square Pulse 25%",
+    "Saw Brass": "Brass Section",
+    "Saw Aggressive": "Saw Lead",
+    "Saw Soft": "Saw Strings",
+    "Saw Sub": "Saw Bass",
+    "Triangle Flute": "Flute",
+    "Triangle Hollow": "Double Bass",
+    "Noise Snare": "Acoustic Snare",
+    "Noise Hi-Hat": "Closed Hi-Hat",
+    "NES Organ": "Pipe Organ",
+    "NES Choir": "Strings Ensemble",
+    "GB Bass": "Square Bass",
+}
 
 
 def categories() -> list[str]:
@@ -346,4 +448,5 @@ def list_presets(category: str = "") -> list[InstrumentPreset]:
 
 
 def get_preset(name: str) -> InstrumentPreset:
-    return PRESETS_BY_NAME.get(name, PRESETS_BY_NAME["Square Lead"])
+    resolved = _LEGACY_PRESET_ALIASES.get(name, name)
+    return PRESETS_BY_NAME.get(resolved, PRESETS_BY_NAME["Grand Piano"])

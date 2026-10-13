@@ -8,6 +8,10 @@ PYINSTALLER="${PYINSTALLER:-.venv/bin/pyinstaller}"
 
 [ -x "$PY" ] || { echo "Missing $PY. Create .venv and install requirements.txt first."; exit 1; }
 [ -x "$PYINSTALLER" ] || { echo "Missing $PYINSTALLER."; exit 1; }
+"$PY" -c "import tinysoundfont" 2>/dev/null || \
+  "$PY" -m pip install --no-deps "tinysoundfont==0.3.7"
+"$PY" -c "import AVFoundation" 2>/dev/null || \
+  "$PY" -m pip install "pyobjc-framework-AVFoundation>=10.3,<13"
 
 VERSION=$("$PY" -c "from blipkit import __version__; print(__version__)")
 ARCH=$(uname -m)
@@ -23,7 +27,10 @@ PYINSTALLER_CONFIG_DIR="$PWD/.pyinstaller" "$PYINSTALLER" main.py \
   --icon "$PWD/assets/icon.icns" \
   --osx-bundle-identifier com.blipkit.desktop \
   --add-data "$PWD/assets/icon.png:assets" \
+  --add-data "$PWD/assets/soundfonts:assets/soundfonts" \
   --collect-all customtkinter \
+  --collect-all tinysoundfont \
+  --hidden-import AVFoundation \
   --hidden-import soundfile \
   --hidden-import lameenc \
   --exclude-module matplotlib \

@@ -10,10 +10,20 @@ import numpy as np
 
 from .dsp import band_limited_wave, limit_peak, one_pole_lowpass
 from .models import SFXPatch
+from .sfx_graph import apply_graph_template, synthesize_graph, vary_graph_nodes
+
+EXCITERS = ("Tone", "Impact", "Scrape", "Drop", "Flow")
+MATERIALS = ("Synthetic", "Metal", "Glass", "Wood", "Water")
+BODIES = ("Open", "Plate", "Tube", "Cavity", "Vessel")
+SPACES = ("Dry", "Room", "Hall", "Underwater")
 
 
 def _patch(name: str, category: str, **values) -> SFXPatch:
-    return SFXPatch(name=name, category=category, **values)
+    graph_template = values.pop("graph_template", "")
+    patch = SFXPatch(name=name, category=category, **values)
+    if graph_template:
+        apply_graph_template(patch, graph_template)
+    return patch
 
 
 PRESETS: dict[str, SFXPatch] = {
@@ -168,6 +178,16 @@ PRESETS: dict[str, SFXPatch] = {
         "Water Drop",
         "自然",
         waveform="Sine",
+        exciter="Drop",
+        material="Water",
+        body="Vessel",
+        space="Room",
+        graph_template="water_drop",
+        hardness=0.48,
+        body_size=0.34,
+        damping=0.42,
+        texture=0.28,
+        space_amount=0.12,
         start_freq=980,
         end_freq=420,
         duration=0.3,
@@ -185,6 +205,127 @@ PRESETS: dict[str, SFXPatch] = {
         attack=0.02,
         decay=0.5,
         release=0.7,
+    ),
+    "Metal Plate": _patch(
+        "Metal Plate",
+        "材质",
+        waveform="Sine",
+        exciter="Impact",
+        material="Metal",
+        body="Plate",
+        space="Room",
+        graph_template="metal_plate",
+        hardness=0.82,
+        body_size=0.58,
+        damping=0.18,
+        texture=0.22,
+        space_amount=0.16,
+        start_freq=360,
+        end_freq=270,
+        duration=1.25,
+        attack=0.001,
+        decay=0.12,
+        sustain=0.32,
+        release=0.72,
+        noise=0.05,
+        lowpass_cutoff=0.92,
+        volume=0.68,
+    ),
+    "Metal Tube": _patch(
+        "Metal Tube",
+        "材质",
+        waveform="Sine",
+        exciter="Impact",
+        material="Metal",
+        body="Tube",
+        space="Room",
+        graph_template="metal_tube",
+        hardness=0.72,
+        body_size=0.72,
+        damping=0.24,
+        texture=0.12,
+        space_amount=0.2,
+        start_freq=280,
+        end_freq=210,
+        duration=1.15,
+        attack=0.001,
+        decay=0.16,
+        sustain=0.3,
+        release=0.68,
+        noise=0.04,
+        volume=0.7,
+    ),
+    "Glass Hit": _patch(
+        "Glass Hit",
+        "材质",
+        waveform="Sine",
+        exciter="Impact",
+        material="Glass",
+        body="Vessel",
+        space="Room",
+        graph_template="glass_hit",
+        hardness=0.9,
+        body_size=0.42,
+        damping=0.16,
+        texture=0.08,
+        space_amount=0.18,
+        start_freq=620,
+        end_freq=460,
+        duration=1.0,
+        attack=0.001,
+        decay=0.1,
+        sustain=0.26,
+        release=0.62,
+        volume=0.62,
+    ),
+    "Wood Knock": _patch(
+        "Wood Knock",
+        "材质",
+        waveform="Triangle",
+        exciter="Impact",
+        material="Wood",
+        body="Cavity",
+        space="Dry",
+        graph_template="wood_knock",
+        hardness=0.42,
+        body_size=0.64,
+        damping=0.72,
+        texture=0.34,
+        start_freq=210,
+        end_freq=125,
+        duration=0.34,
+        attack=0.001,
+        decay=0.08,
+        sustain=0.18,
+        release=0.16,
+        noise=0.12,
+        lowpass_cutoff=0.58,
+        volume=0.76,
+    ),
+    "Water Flow": _patch(
+        "Water Flow",
+        "材质",
+        waveform="Noise",
+        exciter="Flow",
+        material="Water",
+        body="Open",
+        space="Room",
+        graph_template="water_flow",
+        hardness=0.28,
+        body_size=0.62,
+        damping=0.52,
+        texture=0.76,
+        space_amount=0.12,
+        start_freq=760,
+        end_freq=420,
+        duration=1.8,
+        attack=0.12,
+        decay=0.2,
+        sustain=0.78,
+        release=0.32,
+        noise=0.72,
+        lowpass_cutoff=0.74,
+        volume=0.64,
     ),
     "Coin": _patch(
         "Coin",
@@ -291,6 +432,19 @@ def randomize_patch(patch: SFXPatch, seed: int = None) -> SFXPatch:
             max(0.05, patch.lowpass_cutoff + rng.uniform(-0.1, 0.1)),
         ),
         crush=min(1.0, max(0.0, patch.crush + rng.uniform(-0.08, 0.08))),
+        hardness=min(1.0, max(0.0, patch.hardness + rng.uniform(-0.12, 0.12))),
+        body_size=min(1.0, max(0.0, patch.body_size + rng.uniform(-0.12, 0.12))),
+        damping=min(1.0, max(0.0, patch.damping + rng.uniform(-0.12, 0.12))),
+        texture=min(1.0, max(0.0, patch.texture + rng.uniform(-0.12, 0.12))),
+        space_amount=min(
+            1.0,
+            max(0.0, patch.space_amount + rng.uniform(-0.08, 0.08)),
+        ),
+        graph_nodes=(
+            vary_graph_nodes(patch.graph_nodes, rng, 0.1)
+            if patch.graph_nodes
+            else []
+        ),
         seed=actual_seed,
     )
 
@@ -321,6 +475,16 @@ def mutate_patch(
         vibrato_rate=scale(patch.vibrato_rate, 0.1, 24.0),
         lowpass_cutoff=offset(patch.lowpass_cutoff, 0.05, 1.0),
         crush=offset(patch.crush, 0.0, 1.0),
+        hardness=offset(patch.hardness, 0.0, 1.0),
+        body_size=offset(patch.body_size, 0.0, 1.0),
+        damping=offset(patch.damping, 0.0, 1.0),
+        texture=offset(patch.texture, 0.0, 1.0),
+        space_amount=offset(patch.space_amount, 0.0, 1.0),
+        graph_nodes=(
+            vary_graph_nodes(patch.graph_nodes, rng, spread)
+            if patch.graph_nodes
+            else []
+        ),
         seed=actual_seed,
     )
 
@@ -339,8 +503,16 @@ def _adsr(patch: SFXPatch, frames: int, sample_rate: int) -> np.ndarray:
     return env
 
 
-def synthesize(patch: SFXPatch, sample_rate: int = 44100) -> np.ndarray:
-    frames = max(16, int(max(0.03, patch.duration) * sample_rate))
+def _clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
+    return min(maximum, max(minimum, float(value)))
+
+
+def _oscillator_signal(
+    patch: SFXPatch,
+    frames: int,
+    sample_rate: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
     t = np.linspace(0.0, 1.0, frames, endpoint=False, dtype=np.float64)
     curve = np.power(t, max(0.08, patch.bend))
     frequency = patch.start_freq + (patch.end_freq - patch.start_freq) * curve
@@ -356,7 +528,6 @@ def synthesize(patch: SFXPatch, sample_rate: int = 44100) -> np.ndarray:
     else:
         tone = band_limited_wave(cycle, phase_step, waveform)
 
-    rng = np.random.default_rng(patch.seed)
     noise = rng.uniform(-1.0, 1.0, frames)
     noise_amount = patch.noise if waveform != "noise" else 1.0
     signal = tone * (1.0 - noise_amount * 0.75) + noise * noise_amount
@@ -364,6 +535,225 @@ def synthesize(patch: SFXPatch, sample_rate: int = 44100) -> np.ndarray:
     if noise_amount > 0.2:
         noise_cutoff = max(500.0, min(9000.0, patch.start_freq * 5.0))
         signal = one_pole_lowpass(signal, noise_cutoff, sample_rate)
+    return signal
+
+
+def _excitation_signal(
+    patch: SFXPatch,
+    frames: int,
+    sample_rate: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    exciter = patch.exciter.lower()
+    if exciter == "tone":
+        return _oscillator_signal(patch, frames, sample_rate, rng)
+
+    seconds = np.arange(frames, dtype=np.float64) / float(sample_rate)
+    hardness = _clamp(patch.hardness)
+    texture = _clamp(patch.texture)
+    white = rng.uniform(-1.0, 1.0, frames)
+
+    if exciter == "impact":
+        burst_time = 0.004 + (1.0 - hardness) * 0.024
+        burst = np.exp(-seconds / burst_time)
+        thump_frequency = max(35.0, min(220.0, patch.start_freq * 0.24))
+        thump = np.sin(2.0 * np.pi * thump_frequency * seconds)
+        thump *= np.exp(-seconds / (0.035 + 0.08 * (1.0 - hardness)))
+        return white * burst * (0.55 + hardness * 0.45) + thump * 0.35
+
+    if exciter == "scrape":
+        low = one_pole_lowpass(white, 260.0 + texture * 740.0, sample_rate)
+        rough = white - low * (0.72 - texture * 0.28)
+        grain_rate = 18.0 + texture * 72.0
+        grains = 0.28 + 0.72 * np.maximum(
+            0.0,
+            np.sin(2.0 * np.pi * grain_rate * seconds),
+        )
+        return rough * grains
+
+    if exciter == "drop":
+        frequency = np.linspace(
+            max(80.0, patch.start_freq),
+            max(45.0, patch.end_freq),
+            frames,
+            dtype=np.float64,
+        )
+        phase = np.cumsum(frequency / sample_rate)
+        ring = np.sin(2.0 * np.pi * phase)
+        envelope = np.exp(-seconds / (0.045 + (1.0 - hardness) * 0.16))
+        click = white * np.exp(-seconds / 0.006)
+        return ring * envelope + click * (0.12 + hardness * 0.24)
+
+    cutoff = 700.0 + hardness * 5200.0
+    flow = one_pole_lowpass(white, cutoff, sample_rate)
+    motion = (
+        0.68
+        + 0.18 * np.sin(2.0 * np.pi * (0.7 + texture * 1.4) * seconds)
+        + 0.14 * np.sin(2.0 * np.pi * (2.3 + texture * 3.2) * seconds + 0.8)
+    )
+    return flow * motion
+
+
+def _mode_ratios(material: str, body: str) -> tuple[float, ...]:
+    ratios = {
+        "metal": (1.0, 2.71, 5.18, 8.43, 12.1, 16.8),
+        "glass": (1.0, 2.32, 4.25, 6.63, 9.38),
+        "wood": (1.0, 1.47, 2.09, 2.93, 3.74),
+        "synthetic": (1.0, 2.0, 3.0, 4.0, 5.0),
+    }.get(material, (1.0, 2.0, 3.0, 4.0))
+    if body == "tube":
+        return (1.0, 2.02, 3.01, 4.03, 5.05, 6.08)
+    if body == "cavity":
+        return (0.54, *ratios[:4])
+    if body == "vessel":
+        return (0.78, 1.0, 2.32, 4.25, 6.63)
+    if body == "plate":
+        return tuple(ratio * factor for ratio, factor in zip(
+            ratios,
+            (1.0, 1.06, 0.94, 1.11, 0.91, 1.04),
+            strict=False,
+        ))
+    return ratios
+
+
+def _modal_material_signal(
+    patch: SFXPatch,
+    frames: int,
+    sample_rate: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    seconds = np.arange(frames, dtype=np.float64) / float(sample_rate)
+    source = _excitation_signal(patch, frames, sample_rate, rng)
+    material = patch.material.lower()
+    body = patch.body.lower()
+    hardness = _clamp(patch.hardness)
+    damping = _clamp(patch.damping)
+    texture = _clamp(patch.texture)
+    size_scale = 2.0 ** ((0.5 - _clamp(patch.body_size)) * 2.2)
+    base_frequency = max(35.0, min(sample_rate * 0.18, patch.start_freq * size_scale))
+    continuous = patch.exciter.lower() in {"tone", "scrape", "flow"}
+    material_decay = {
+        "metal": 1.5,
+        "glass": 1.18,
+        "wood": 0.38,
+        "synthetic": 0.72,
+    }.get(material, 0.72)
+    base_decay = (0.08 + (1.0 - damping) ** 2 * 1.85) * material_decay
+
+    modes = np.zeros(frames, dtype=np.float64)
+    amplitude_total = 0.0
+    for index, ratio in enumerate(_mode_ratios(material, body)):
+        frequency = base_frequency * ratio
+        if frequency >= sample_rate * 0.46:
+            continue
+        high_mode_gain = 0.62 - hardness * 0.3
+        amplitude = 1.0 / (1.0 + index * high_mode_gain)
+        phase = rng.uniform(0.0, 2.0 * np.pi)
+        if continuous:
+            mode_envelope = np.ones(frames, dtype=np.float64)
+        else:
+            decay_time = base_decay / (1.0 + index * (0.1 + damping * 0.2))
+            mode_envelope = np.exp(-seconds / max(0.012, decay_time))
+        modes += np.sin(2.0 * np.pi * frequency * seconds + phase) * mode_envelope * amplitude
+        amplitude_total += amplitude
+    if amplitude_total:
+        modes /= amplitude_total
+
+    source_gain = 0.16 + texture * 0.3
+    signal = modes * (0.92 - source_gain * 0.35) + source * source_gain
+    if material == "wood":
+        cutoff = 900.0 + hardness * 3600.0
+        signal = one_pole_lowpass(signal, cutoff, sample_rate)
+    return signal
+
+
+def _water_signal(
+    patch: SFXPatch,
+    frames: int,
+    sample_rate: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    seconds = np.arange(frames, dtype=np.float64) / float(sample_rate)
+    hardness = _clamp(patch.hardness)
+    texture = _clamp(patch.texture)
+    damping = _clamp(patch.damping)
+    source = _excitation_signal(patch, frames, sample_rate, rng)
+    exciter = patch.exciter.lower()
+    signal = source * (0.5 if exciter == "flow" else 0.22)
+
+    if exciter == "drop":
+        event_count = 1 + int(round(texture * 3.0))
+        starts = [0.0]
+        starts.extend(
+            sorted(rng.uniform(0.035, max(0.04, patch.duration * 0.72), event_count - 1))
+        )
+    elif exciter == "flow":
+        event_count = 7 + int(round(texture * 18.0))
+        starts = sorted(rng.uniform(0.0, max(0.02, patch.duration * 0.92), event_count))
+    else:
+        event_count = 3 + int(round(texture * 10.0))
+        starts = sorted(rng.uniform(0.0, max(0.02, patch.duration * 0.7), event_count))
+
+    size_scale = 2.0 ** ((0.5 - _clamp(patch.body_size)) * 1.5)
+    base_frequency = max(90.0, patch.start_freq * size_scale)
+    for index, start in enumerate(starts):
+        start_frame = min(frames - 1, max(0, int(start * sample_rate)))
+        local = seconds[start_frame:] - start
+        frequency = base_frequency * rng.uniform(0.72, 1.36)
+        sweep_time = 0.018 + rng.uniform(0.015, 0.08) + damping * 0.025
+        phase = 2.0 * np.pi * frequency * sweep_time * (
+            1.0 - np.exp(-local / sweep_time)
+        )
+        lifetime = 0.035 + rng.uniform(0.025, 0.13) + (1.0 - damping) * 0.08
+        envelope = (1.0 - np.exp(-local * 240.0)) * np.exp(-local / lifetime)
+        amplitude = rng.uniform(0.28, 0.72) / (1.0 + index * 0.035)
+        signal[start_frame:] += np.sin(phase) * envelope * amplitude
+
+    if exciter == "flow":
+        background = rng.uniform(-1.0, 1.0, frames)
+        cutoff = 900.0 + hardness * 4800.0
+        background = one_pole_lowpass(background, cutoff, sample_rate)
+        signal += background * (0.24 + texture * 0.22)
+    if patch.body.lower() == "vessel":
+        vessel_frequency = max(55.0, base_frequency * 0.42)
+        vessel = np.sin(2.0 * np.pi * vessel_frequency * seconds)
+        vessel *= np.exp(-seconds / (0.08 + (1.0 - damping) * 0.42))
+        signal += vessel * 0.18
+    return signal
+
+
+def _apply_space(
+    signal: np.ndarray,
+    patch: SFXPatch,
+    sample_rate: int,
+) -> np.ndarray:
+    amount = _clamp(patch.space_amount)
+    space = patch.space.lower()
+    if amount <= 0.001 or space == "dry":
+        return signal
+    source = signal
+    if space == "underwater":
+        source = one_pole_lowpass(source, 420.0 + 1200.0 * (1.0 - amount), sample_rate)
+        taps = ((0.028, 0.42), (0.061, 0.26), (0.097, 0.16))
+    elif space == "hall":
+        taps = ((0.043, 0.5), (0.071, 0.37), (0.109, 0.28), (0.157, 0.2))
+    else:
+        taps = ((0.017, 0.45), (0.031, 0.3), (0.047, 0.18))
+
+    wet = np.zeros_like(source, dtype=np.float64)
+    for delay_seconds, gain in taps:
+        delay = max(1, int(delay_seconds * sample_rate))
+        if delay < len(source):
+            wet[delay:] += source[:-delay] * gain
+    return source * (1.0 - amount * 0.24) + wet * amount
+
+
+def _finish_signal(
+    signal: np.ndarray,
+    patch: SFXPatch,
+    frames: int,
+    sample_rate: int,
+) -> np.ndarray:
 
     if patch.lowpass_cutoff < 0.995:
         amount = max(0.05, min(1.0, patch.lowpass_cutoff))
@@ -377,10 +767,31 @@ def synthesize(patch: SFXPatch, sample_rate: int = 44100) -> np.ndarray:
 
     signal *= _adsr(patch, frames, sample_rate)
     signal *= min(1.0, max(0.0, patch.volume))
+    signal = _apply_space(signal, patch, sample_rate)
     signal = limit_peak(signal, ceiling=0.92)
     if not np.all(np.isfinite(signal)):
         raise ValueError("SFX synthesis produced invalid samples")
     return signal.astype(np.float32)
+
+
+def synthesize(patch: SFXPatch, sample_rate: int = 44100) -> np.ndarray:
+    if patch.graph_enabled and patch.graph_nodes:
+        return synthesize_graph(patch, sample_rate=sample_rate)
+    frames = max(16, int(max(0.03, patch.duration) * sample_rate))
+    rng = np.random.default_rng(patch.seed)
+    legacy_chain = (
+        patch.exciter == "Tone"
+        and patch.material == "Synthetic"
+        and patch.body == "Open"
+        and patch.space == "Dry"
+    )
+    if legacy_chain:
+        signal = _oscillator_signal(patch, frames, sample_rate, rng)
+    elif patch.material.lower() == "water":
+        signal = _water_signal(patch, frames, sample_rate, rng)
+    else:
+        signal = _modal_material_signal(patch, frames, sample_rate, rng)
+    return _finish_signal(signal, patch, frames, sample_rate)
 
 
 def waveform_preview(samples: np.ndarray, points: int = 240) -> list[float]:

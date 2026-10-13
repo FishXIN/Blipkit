@@ -109,10 +109,52 @@ class Song:
 
 
 @dataclass
+class SFXNode:
+    kind: str
+    x: float
+    y: float
+    params: dict[str, Any] = field(default_factory=dict)
+    id: str = field(default_factory=lambda: _id("node"))
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SFXNode:
+        raw_params = data.get("params", {})
+        return cls(
+            kind=str(data.get("kind", "oscillator")),
+            x=float(data.get("x", 40.0)),
+            y=float(data.get("y", 40.0)),
+            params=dict(raw_params) if isinstance(raw_params, dict) else {},
+            id=str(data.get("id") or _id("node")),
+        )
+
+
+@dataclass
+class SFXConnection:
+    source: str
+    target: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SFXConnection:
+        return cls(
+            source=str(data.get("source", "")),
+            target=str(data.get("target", "")),
+        )
+
+
+@dataclass
 class SFXPatch:
     name: str
     category: str = "UI"
     waveform: str = "Sine"
+    exciter: str = "Tone"
+    material: str = "Synthetic"
+    body: str = "Open"
+    space: str = "Dry"
+    hardness: float = 0.5
+    body_size: float = 0.5
+    damping: float = 0.5
+    texture: float = 0.25
+    space_amount: float = 0.0
     attack: float = 0.005
     decay: float = 0.08
     sustain: float = 0.35
@@ -128,6 +170,9 @@ class SFXPatch:
     crush: float = 0.0
     volume: float = 0.8
     seed: int = 1
+    graph_enabled: bool = False
+    graph_nodes: list[SFXNode] = field(default_factory=list)
+    graph_connections: list[SFXConnection] = field(default_factory=list)
     id: str = field(default_factory=lambda: _id("sfx"))
 
     def to_dict(self) -> dict[str, Any]:
@@ -139,6 +184,15 @@ class SFXPatch:
             "name": str(data.get("name", "Untitled SFX")),
             "category": str(data.get("category", "UI")),
             "waveform": str(data.get("waveform", "Sine")),
+            "exciter": str(data.get("exciter", "Tone")),
+            "material": str(data.get("material", "Synthetic")),
+            "body": str(data.get("body", "Open")),
+            "space": str(data.get("space", "Dry")),
+            "hardness": float(data.get("hardness", 0.5)),
+            "body_size": float(data.get("body_size", 0.5)),
+            "damping": float(data.get("damping", 0.5)),
+            "texture": float(data.get("texture", 0.25)),
+            "space_amount": float(data.get("space_amount", 0.0)),
             "attack": float(data.get("attack", 0.005)),
             "decay": float(data.get("decay", 0.08)),
             "sustain": float(data.get("sustain", 0.35)),
@@ -154,6 +208,17 @@ class SFXPatch:
             "crush": float(data.get("crush", 0.0)),
             "volume": float(data.get("volume", 0.8)),
             "seed": int(data.get("seed", 1)),
+            "graph_enabled": bool(data.get("graph_enabled", False)),
+            "graph_nodes": [
+                SFXNode.from_dict(item)
+                for item in data.get("graph_nodes", [])
+                if isinstance(item, dict)
+            ],
+            "graph_connections": [
+                SFXConnection.from_dict(item)
+                for item in data.get("graph_connections", [])
+                if isinstance(item, dict)
+            ],
             "id": str(data.get("id") or _id("sfx")),
         }
         return cls(**fields)
