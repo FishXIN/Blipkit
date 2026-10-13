@@ -16,7 +16,11 @@ import numpy as np
 
 from blipkit.core.models import Note, Song, Track
 from blipkit.core.music_assistant import chord_to_midi, is_in_scale
-from blipkit.core.sequencer import render_song, song_duration
+from blipkit.core.sequencer import (
+    mix_song_stems,
+    render_song_stems,
+    song_duration,
+)
 from blipkit.core.soundbank import BUILTIN_PRESETS
 
 from . import tokens as T
@@ -27,6 +31,7 @@ from .widgets import LabeledSlider, action_button, icon_button, ui_font
 @dataclass(frozen=True)
 class SequencerPlaybackPlan:
     cache_key: str
+    stem_cache_key: str
     song: Song
     sample_rate: int
     start_beat: float
@@ -37,13 +42,27 @@ class SequencerPlaybackPlan:
         beats = max(0.0, self.song.loop_end - self.start_beat)
         return max(0.05, beats * 60.0 / max(20, self.song.bpm))
 
-    def render_full(self) -> np.ndarray:
-        return render_song(
+    def render_bundle(self) -> tuple[np.ndarray, tuple[np.ndarray, ...]]:
+        stems = render_song_stems(
             self.song,
             sample_rate=self.sample_rate,
-            loop_only=False,
-            stereo=True,
         )
+        return self.mix_stems(stems), stems
+
+    def render_full(self) -> np.ndarray:
+        rendered, _stems = self.render_bundle()
+        return rendered
+
+    def mix_stems(self, stems: tuple[np.ndarray, ...]) -> np.ndarray:
+        return mix_song_stems(
+            self.song,
+            stems,
+            stereo=True,
+            sample_rate=self.sample_rate,
+        )
+
+    def output_from_stems(self, stems: tuple[np.ndarray, ...]) -> np.ndarray:
+        return self.output_from(self.mix_stems(stems))
 
     def output_from(self, rendered: np.ndarray) -> np.ndarray:
         start = int(self.start_beat * 60.0 / self.song.bpm * self.sample_rate)
@@ -116,6 +135,7 @@ class SequencerView(ctk.CTkFrame):
         on_preview: Callable[[int, str, int], None],
         on_import_midi: Callable[[], None],
         on_export_midi: Callable[[], None],
+        on_mix_change: Callable[[], None] | None = None,
     ):
         super().__init__(parent, fg_color=T.SURFACE)
         self.song = song
@@ -126,6 +146,7 @@ class SequencerView(ctk.CTkFrame):
         self.on_preview = on_preview
         self.on_import_midi = on_import_midi
         self.on_export_midi = on_export_midi
+        self.on_mix_change = on_mix_change or (lambda: None)
         self.selected_track_index = 0
         self.selected_note_id: str | None = None
         self.selected_note_ids: set[str] = set()
@@ -948,6 +969,7 @@ class SequencerView(ctk.CTkFrame):
         self._rebuild_tracks()
         self.redraw()
         self.on_change()
+        self.on_mix_change()
         self.on_status(f"{track.name} {'已静音' if track.muted else '已取消静音'}")
 
     def toggle_track_solo(self, index: int) -> None:
@@ -957,6 +979,7 @@ class SequencerView(ctk.CTkFrame):
         self._rebuild_tracks()
         self.redraw()
         self.on_change()
+        self.on_mix_change()
         self.on_status(f"{track.name} {'独奏' if track.soloed else '取消独奏'}")
 
     def move_track(self, offset: int) -> None:
@@ -2403,8 +2426,20 @@ class SequencerView(ctk.CTkFrame):
             separators=(",", ":"),
         )
         digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        stem_data = song.to_dict()
+        for track_data in stem_data["tracks"]:
+            track_data["muted"] = False
+            track_data["soloed"] = False
+        stem_serialized = json.dumps(
+            stem_data,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        stem_digest = hashlib.sha256(stem_serialized.encode("utf-8")).hexdigest()
         return SequencerPlaybackPlan(
-            cache_key=f"music-v1:{sample_rate}:{digest}",
+            cache_key=f"music-v2:{sample_rate}:{digest}",
+            stem_cache_key=f"stems-v1:{sample_rate}:{stem_digest}",
             song=song,
             sample_rate=sample_rate,
             start_beat=self._playback_start(),

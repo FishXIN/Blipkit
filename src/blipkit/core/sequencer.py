@@ -11,7 +11,12 @@ from .models import Note, Song, Track
 from .sample_engine import (
     is_available as sample_engine_available,
 )
-from .sample_engine import render_sampled_note, render_sampled_tracks, uses_samples
+from .sample_engine import (
+    render_sampled_note,
+    render_sampled_track_layers,
+    render_sampled_tracks,
+    uses_samples,
+)
 from .soundbank import InstrumentPreset, get_preset
 
 
@@ -224,11 +229,13 @@ def render_track(
     bpm: int,
     total_beats: float,
     sample_rate: int = 44100,
+    *,
+    ignore_mute: bool = False,
 ) -> np.ndarray:
     total_seconds = total_beats * 60.0 / max(20, int(bpm))
     frames = max(1, int(total_seconds * sample_rate))
     output = np.zeros(frames, dtype=np.float32)
-    if track.muted:
+    if track.muted and not ignore_mute:
         return output
     preset = get_preset(track.instrument)
     for note in track.notes:
@@ -247,6 +254,89 @@ def _master_output(mix: np.ndarray) -> np.ndarray:
     if 1e-9 < peak < 0.82:
         mix = mix * min(1.5, 0.82 / peak)
     return limit_peak(mix)
+
+
+def render_song_stems(
+    song: Song,
+    sample_rate: int = 44100,
+) -> tuple[np.ndarray, ...]:
+    total_beats = max(float(song.bars * 4), float(song.loop_end))
+    frames = max(1, int(total_beats * 60.0 / song.bpm * sample_rate))
+    stems = [
+        np.zeros((frames, 2), dtype=np.float32)
+        for _track in song.tracks
+    ]
+    sampled_entries: list[tuple[int, Track]] = []
+    procedural_entries: list[tuple[int, Track]] = []
+    sampled_enabled = sample_engine_available()
+    for index, track in enumerate(song.tracks):
+        preset = get_preset(track.instrument)
+        if sampled_enabled and uses_samples(preset):
+            sampled_entries.append((index, track))
+        else:
+            procedural_entries.append((index, track))
+
+    sampled_layers = render_sampled_track_layers(
+        [track for _index, track in sampled_entries],
+        song.bpm,
+        total_beats,
+        sample_rate,
+    )
+    for (index, _track), layer in zip(
+        sampled_entries,
+        sampled_layers,
+        strict=True,
+    ):
+        stems[index] = layer
+
+    pans = (
+        np.linspace(-0.24, 0.24, len(procedural_entries))
+        if len(procedural_entries) > 1
+        else [0.0] if procedural_entries else []
+    )
+    for (index, track), pan in zip(procedural_entries, pans, strict=True):
+        mono = render_track(
+            track,
+            song.bpm,
+            total_beats,
+            sample_rate,
+            ignore_mute=True,
+        )
+        left_gain = math.sqrt(1.0 - float(pan))
+        right_gain = math.sqrt(1.0 + float(pan))
+        stems[index][:, 0] = mono * left_gain
+        stems[index][:, 1] = mono * right_gain
+    return tuple(stems)
+
+
+def mix_song_stems(
+    song: Song,
+    stems: tuple[np.ndarray, ...],
+    *,
+    stereo: bool = True,
+    sample_rate: int = 44100,
+) -> np.ndarray:
+    if len(stems) != len(song.tracks):
+        raise ValueError("Stem count does not match song tracks")
+    solo_indices = [
+        index
+        for index, track in enumerate(song.tracks)
+        if track.soloed and not track.muted
+    ]
+    active_indices = solo_indices or [
+        index for index, track in enumerate(song.tracks) if not track.muted
+    ]
+    if stems:
+        frames = len(stems[0])
+    else:
+        total_beats = max(float(song.bars * 4), float(song.loop_end))
+        frames = max(1, int(total_beats * 60.0 / song.bpm * sample_rate))
+    mix = np.zeros((frames, 2), dtype=np.float32)
+    for index in active_indices:
+        mix += stems[index]
+    if stereo:
+        return _master_output(mix)
+    return _master_output(mix.mean(axis=1))
 
 
 def render_song(

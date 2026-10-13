@@ -17,7 +17,12 @@ from blipkit.core.midi_io import export_song_midi, import_song_midi
 from blipkit.core.models import Note, SFXPatch, Song, Track
 from blipkit.core.music_assistant import chord_to_midi, is_in_scale
 from blipkit.core.project import BlipkitProject
-from blipkit.core.sequencer import render_note, render_song
+from blipkit.core.sequencer import (
+    mix_song_stems,
+    render_note,
+    render_song,
+    render_song_stems,
+)
 from blipkit.core.sfx_synth import get_preset, mutate_patch, preset_names, synthesize
 from blipkit.core.showcase import SHOWCASE_SONG_NAMES, create_showcase_songs
 from blipkit.core.soundbank import BUILTIN_PRESETS
@@ -151,6 +156,38 @@ class SynthesisTests(unittest.TestCase):
         song.tracks[1].muted = True
         expected = render_song(song, sample_rate=8000, loop_only=True, stereo=False)
         self.assertTrue(np.array_equal(solo_mix, expected))
+
+    def test_stem_mix_applies_live_mute_without_rerendering(self):
+        song = Song(
+            name="live mute",
+            bpm=120,
+            bars=1,
+            loop_end=4,
+            tracks=[
+                Track(
+                    name="first",
+                    instrument="Square Lead",
+                    notes=[Note(pitch=60, start=0, duration=1)],
+                ),
+                Track(
+                    name="second",
+                    instrument="Square Lead",
+                    notes=[Note(pitch=72, start=2, duration=1)],
+                ),
+            ],
+        )
+        stems = render_song_stems(song, sample_rate=8000)
+        full_mix = mix_song_stems(song, stems, sample_rate=8000)
+        song.tracks[1].muted = True
+        muted_mix = mix_song_stems(song, stems, sample_rate=8000)
+
+        self.assertEqual(len(stems), 2)
+        self.assertFalse(np.array_equal(full_mix, muted_mix))
+        second_note_start = int(2 * 60 / song.bpm * 8000)
+        self.assertGreater(
+            float(np.max(np.abs(full_mix[second_note_start:]))),
+            float(np.max(np.abs(muted_mix[second_note_start:]))) + 0.05,
+        )
 
     def test_dense_chord_uses_clean_peak_management(self):
         notes = [

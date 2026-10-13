@@ -48,6 +48,7 @@ def editor(tk_root):
         on_preview=lambda *_args: None,
         on_import_midi=lambda: None,
         on_export_midi=lambda: None,
+        on_mix_change=lambda: events.append("mix"),
     )
     view.pack(fill="both", expand=True)
     view.set_editor_view("钢琴卷帘")
@@ -203,6 +204,16 @@ def test_arrangement_double_click_opens_note_in_piano_roll(editor) -> None:
     assert view.selected_track_index == 1
     assert view.selected_note_ids == {second_note.id}
     assert view.insert_beat == second_note.start
+
+
+def test_track_mute_notifies_live_playback_mix(editor) -> None:
+    view = editor.view
+
+    view.toggle_track_mute(0)
+
+    assert view.song.tracks[0].muted
+    assert "mix" in editor.events
+    assert "change" in editor.events
 
 
 def test_space_plays_without_scrolling_focused_canvas(editor) -> None:

@@ -149,6 +149,37 @@ def _render_track(
     return _match_peak(output, target) * max(0.0, min(1.0, track.volume))
 
 
+def render_sampled_track_layers(
+    tracks: list[Track],
+    bpm: int,
+    total_beats: float,
+    sample_rate: int,
+) -> list[np.ndarray]:
+    frames = max(1, int(total_beats * 60.0 / bpm * sample_rate))
+    if not tracks:
+        return []
+
+    with _LOCK:
+        synth, sfid = _get_synth(sample_rate)
+        assert sfid is not None
+        layers: list[np.ndarray] = []
+        pans = np.linspace(-0.2, 0.2, len(tracks)) if len(tracks) > 1 else [0.0]
+        for channel, (track, pan) in enumerate(zip(tracks, pans, strict=True)):
+            layer = _render_track(synth, sfid, track, bpm, frames, sample_rate)
+            left_gain = np.sqrt(1.0 - float(pan))
+            right_gain = np.sqrt(1.0 + float(pan))
+            layer[:, 0] *= left_gain
+            layer[:, 1] *= right_gain
+            layers.append(layer)
+        fade_frames = min(frames, max(1, int(sample_rate * 0.02)))
+        fade = np.linspace(1.0, 0.0, fade_frames)[:, None]
+        silence_frames = min(frames, max(1, int(sample_rate * 0.01)))
+        for layer in layers:
+            layer[-fade_frames:] *= fade
+            layer[-silence_frames:] = 0.0
+        return layers
+
+
 def render_sampled_tracks(
     tracks: list[Track],
     bpm: int,
@@ -156,22 +187,7 @@ def render_sampled_tracks(
     sample_rate: int,
 ) -> np.ndarray:
     frames = max(1, int(total_beats * 60.0 / bpm * sample_rate))
-    if not tracks:
+    layers = render_sampled_track_layers(tracks, bpm, total_beats, sample_rate)
+    if not layers:
         return np.zeros((frames, 2), dtype=np.float32)
-
-    with _LOCK:
-        synth, sfid = _get_synth(sample_rate)
-        assert sfid is not None
-        mix = np.zeros((frames, 2), dtype=np.float32)
-        pans = np.linspace(-0.2, 0.2, len(tracks)) if len(tracks) > 1 else [0.0]
-        for channel, (track, pan) in enumerate(zip(tracks, pans, strict=True)):
-            layer = _render_track(synth, sfid, track, bpm, frames, sample_rate)
-            left_gain = np.sqrt(1.0 - float(pan))
-            right_gain = np.sqrt(1.0 + float(pan))
-            mix[:, 0] += layer[:, 0] * left_gain
-            mix[:, 1] += layer[:, 1] * right_gain
-        fade_frames = min(frames, max(1, int(sample_rate * 0.02)))
-        mix[-fade_frames:] *= np.linspace(1.0, 0.0, fade_frames)[:, None]
-        silence_frames = min(frames, max(1, int(sample_rate * 0.01)))
-        mix[-silence_frames:] = 0.0
-        return mix
+    return np.sum(layers, axis=0, dtype=np.float32)

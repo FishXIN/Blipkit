@@ -54,11 +54,13 @@ class BlipkitApp(ctk.CTk):
         self.current_mode = "music"
         self.last_editor_mode = "music"
         self.dirty = False
+        self._sidebar_collapsed = False
         self._playing = False
         self._playback_loading = False
         self._playback_request_id = 0
         self._playback_after_id: str | None = None
         self._music_preview_cache = OrderedDict()
+        self._music_stem_cache = OrderedDict()
         self._music_render_results = queue.SimpleQueue()
         self._music_render_active_key: str | None = None
         self._music_render_pending_plan: SequencerPlaybackPlan | None = None
@@ -134,28 +136,49 @@ class BlipkitApp(ctk.CTk):
         return patch
 
     def _build_header(self) -> None:
-        header = ctk.CTkFrame(
+        self.header = ctk.CTkFrame(
             self,
             height=T.HEADER_H,
             fg_color=T.NAV_BG,
             corner_radius=0,
         )
-        header.grid(row=0, column=0, sticky="ew")
-        header.grid_propagate(False)
-        header.grid_rowconfigure(0, weight=1)
-        header.grid_columnconfigure(0, minsize=T.SIDEBAR_W)
-        header.grid_columnconfigure(2, weight=1)
-        ctk.CTkLabel(
-            header,
-            text="BLIPKIT",
+        self.header.grid(row=0, column=0, sticky="ew")
+        self.header.grid_propagate(False)
+        self.header.grid_rowconfigure(0, weight=1)
+        self.header.grid_columnconfigure(0, minsize=T.SIDEBAR_W)
+        self.header.grid_columnconfigure(2, weight=1)
+        self.header_sidebar = ctk.CTkFrame(
+            self.header,
             width=T.SIDEBAR_W,
+            fg_color="transparent",
+            corner_radius=0,
+        )
+        self.header_sidebar.grid(row=0, column=0, sticky="nsew")
+        self.header_sidebar.grid_propagate(False)
+        self.header_sidebar.grid_rowconfigure(0, weight=1)
+        self.header_sidebar.grid_columnconfigure(0, weight=1)
+        self.brand_label = ctk.CTkLabel(
+            self.header_sidebar,
+            text="BLIPKIT",
             text_color=T.TEXT,
             font=ui_font(17, "bold"),
             anchor="w",
-        ).grid(row=0, column=0, padx=(20, 0), sticky="w")
-        ctk.CTkFrame(header, width=1, fg_color=T.BORDER).grid(row=0, column=1, sticky="ns", pady=16)
+        )
+        self.brand_label.grid(row=0, column=0, padx=(20, 0), sticky="w")
+        self.sidebar_toggle = icon_button(
+            self.header_sidebar,
+            "‹",
+            self.toggle_sidebar,
+        )
+        self.sidebar_toggle.grid(row=0, column=1, padx=(0, 8))
+        self.header_divider = ctk.CTkFrame(
+            self.header,
+            width=1,
+            fg_color=T.BORDER,
+        )
+        self.header_divider.grid(row=0, column=1, sticky="ns", pady=16)
         self.project_label = ctk.CTkLabel(
-            header,
+            self.header,
             text=self.project.metadata.name,
             text_color=T.TEXT,
             font=ui_font(16, "bold"),
@@ -163,7 +186,7 @@ class BlipkitApp(ctk.CTk):
         )
         self.project_label.grid(row=0, column=2, padx=20, sticky="w")
 
-        controls = ctk.CTkFrame(header, fg_color="transparent")
+        controls = ctk.CTkFrame(self.header, fg_color="transparent")
         controls.grid(row=0, column=3, padx=(12, 16))
         action_button(controls, "打开", self.open_project, width=64, quiet=True).pack(
             side="left", padx=(0, 4)
@@ -180,14 +203,14 @@ class BlipkitApp(ctk.CTk):
         )
 
     def _build_content(self) -> None:
-        content = ctk.CTkFrame(self, fg_color=T.NAV_BG, corner_radius=0)
-        content.grid(row=1, column=0, sticky="nsew")
-        content.grid_rowconfigure(0, weight=1)
-        content.grid_columnconfigure(0, minsize=T.SIDEBAR_W)
-        content.grid_columnconfigure(1, weight=1)
+        self.content = ctk.CTkFrame(self, fg_color=T.NAV_BG, corner_radius=0)
+        self.content.grid(row=1, column=0, sticky="nsew")
+        self.content.grid_rowconfigure(0, weight=1)
+        self.content.grid_columnconfigure(0, minsize=T.SIDEBAR_W)
+        self.content.grid_columnconfigure(1, weight=1)
 
         self.sidebar = ctk.CTkFrame(
-            content,
+            self.content,
             width=T.SIDEBAR_W,
             fg_color=T.NAV_BG,
             corner_radius=0,
@@ -222,10 +245,14 @@ class BlipkitApp(ctk.CTk):
         )
         self.asset_list.grid(row=3, column=0, sticky="nsew", padx=(10, 7), pady=(0, 6))
 
-        workspace_shell = ctk.CTkFrame(content, fg_color=T.NAV_BG, corner_radius=0)
-        workspace_shell.grid(row=0, column=1, sticky="nsew")
+        self.workspace_shell = ctk.CTkFrame(
+            self.content,
+            fg_color=T.NAV_BG,
+            corner_radius=0,
+        )
+        self.workspace_shell.grid(row=0, column=1, sticky="nsew")
         self.workspace = ctk.CTkFrame(
-            workspace_shell,
+            self.workspace_shell,
             fg_color=T.SURFACE,
             corner_radius=T.RADIUS_PANEL,
             border_width=1,
@@ -274,35 +301,41 @@ class BlipkitApp(ctk.CTk):
         icon_button(self.asset_header, "+", self.new_asset).pack(side="right")
 
     def _build_status(self) -> None:
-        status = ctk.CTkFrame(
+        self.status = ctk.CTkFrame(
             self,
             height=T.STATUS_H,
             fg_color=T.NAV_BG,
             corner_radius=0,
         )
-        status.grid(row=2, column=0, sticky="ew")
-        status.grid_propagate(False)
-        status.grid_rowconfigure(0, weight=1)
-        status.grid_columnconfigure(0, minsize=T.SIDEBAR_W)
-        status.grid_columnconfigure(2, weight=1)
-        ctk.CTkLabel(
-            status,
+        self.status.grid(row=2, column=0, sticky="ew")
+        self.status.grid_propagate(False)
+        self.status.grid_rowconfigure(0, weight=1)
+        self.status.grid_columnconfigure(0, minsize=T.SIDEBAR_W)
+        self.status.grid_columnconfigure(2, weight=1)
+        self.version_label = ctk.CTkLabel(
+            self.status,
             text=f"Blipkit {__version__}",
             text_color=T.TEXT_DISABLED,
             font=ui_font(10, mono=True),
             anchor="w",
-        ).grid(row=0, column=0, padx=20, sticky="w")
-        ctk.CTkFrame(status, width=1, fg_color=T.BORDER).grid(row=0, column=1, sticky="ns", pady=10)
+        )
+        self.version_label.grid(row=0, column=0, padx=20, sticky="w")
+        self.status_divider = ctk.CTkFrame(
+            self.status,
+            width=1,
+            fg_color=T.BORDER,
+        )
+        self.status_divider.grid(row=0, column=1, sticky="ns", pady=10)
         self.status_var = tk.StringVar(value="工程已就绪")
         ctk.CTkLabel(
-            status,
+            self.status,
             textvariable=self.status_var,
             text_color=T.TEXT_MUTED,
             font=ui_font(T.TEXT_12),
             anchor="w",
         ).grid(row=0, column=2, padx=(12, 0), sticky="w")
         self.transport_meta = ctk.CTkLabel(
-            status,
+            self.status,
             text="",
             text_color=T.TEXT_MUTED,
             font=ui_font(T.TEXT_12, mono=True),
@@ -310,6 +343,45 @@ class BlipkitApp(ctk.CTk):
         )
         self.transport_meta.grid(row=0, column=3, padx=(12, 18))
         self._update_status_meta()
+
+    def toggle_sidebar(self) -> None:
+        self._set_sidebar_collapsed(not self._sidebar_collapsed)
+
+    def _set_sidebar_collapsed(self, collapsed: bool) -> None:
+        if collapsed == self._sidebar_collapsed:
+            return
+        self._sidebar_collapsed = collapsed
+        if collapsed:
+            self.sidebar.grid_remove()
+            self.content.grid_columnconfigure(0, minsize=0)
+            self.header.grid_columnconfigure(0, minsize=44)
+            self.header_sidebar.configure(width=44)
+            self.brand_label.grid_remove()
+            self.sidebar_toggle.configure(text="☰")
+            self.project_label.grid_configure(padx=(16, 20))
+            self.workspace.pack_configure(padx=(8, 8))
+            self.status.grid_columnconfigure(0, minsize=44)
+            self.version_label.grid_remove()
+            self.set_status("侧栏已收起")
+        else:
+            self.sidebar.grid()
+            self.content.grid_columnconfigure(0, minsize=T.SIDEBAR_W)
+            self.header.grid_columnconfigure(0, minsize=T.SIDEBAR_W)
+            self.header_sidebar.configure(width=T.SIDEBAR_W)
+            self.brand_label.grid()
+            self.sidebar_toggle.configure(text="‹")
+            self.project_label.grid_configure(padx=20)
+            self.workspace.pack_configure(padx=(0, 8))
+            self.status.grid_columnconfigure(0, minsize=T.SIDEBAR_W)
+            self.version_label.grid()
+            self.set_status("侧栏已展开")
+        self.after_idle(self._refresh_workspace_layout)
+
+    def _refresh_workspace_layout(self) -> None:
+        if isinstance(self.current_view, SequencerView):
+            self.current_view.redraw()
+        elif isinstance(self.current_view, SFXView):
+            self.current_view.redraw_waveform()
 
     def _bind_shortcuts(self) -> None:
         modifier = "Command" if sys.platform == "darwin" else "Control"
@@ -329,6 +401,10 @@ class BlipkitApp(ctk.CTk):
         self.bind_all(f"<{modifier}-z>", self._shortcut_undo)
         self.bind_all(f"<{modifier}-a>", self._shortcut_select_all)
         self.bind_all(f"<{modifier}-Shift-z>", self._shortcut_redo)
+        self.bind_all(
+            f"<{modifier}-backslash>",
+            self._shortcut_toggle_sidebar,
+        )
         self.bind_all(f"<{modifier}-equal>", lambda event: self._shortcut_zoom(event, 4))
         self.bind_all(f"<{modifier}-plus>", lambda event: self._shortcut_zoom(event, 4))
         self.bind_all(f"<{modifier}-minus>", lambda event: self._shortcut_zoom(event, -4))
@@ -412,6 +488,12 @@ class BlipkitApp(ctk.CTk):
 
     def _shortcut_save(self, _event=None) -> str:
         self.save_current()
+        return "break"
+
+    def _shortcut_toggle_sidebar(self, event=None):
+        if event is not None and self._is_text_input(event):
+            return None
+        self.toggle_sidebar()
         return "break"
 
     def _shortcut_open(self, _event=None) -> str:
@@ -611,6 +693,7 @@ class BlipkitApp(ctk.CTk):
                 self.preview_note,
                 self.import_midi,
                 self.export_midi,
+                on_mix_change=self._on_track_mix_change,
             )
         elif mode == "sfx":
             self.current_view = SFXView(
@@ -804,8 +887,12 @@ class BlipkitApp(ctk.CTk):
             )
         except Exception:
             return
-        if self._cached_music_preview(plan) is None:
+        rendered = self._cached_music_preview(plan)
+        stems = self._cached_music_stems(plan)
+        if stems is None:
             self._request_music_render(plan)
+        elif rendered is None:
+            self._remember_music_preview(plan.cache_key, plan.mix_stems(stems))
 
     @staticmethod
     def _music_preview_cache_path(plan: SequencerPlaybackPlan) -> Path:
@@ -818,6 +905,26 @@ class BlipkitApp(ctk.CTk):
         while len(self._music_preview_cache) > 2:
             self._music_preview_cache.popitem(last=False)
         return samples
+
+    def _remember_music_stems(
+        self,
+        cache_key: str,
+        stems: tuple[np.ndarray, ...],
+    ) -> tuple[np.ndarray, ...]:
+        self._music_stem_cache[cache_key] = stems
+        self._music_stem_cache.move_to_end(cache_key)
+        while len(self._music_stem_cache) > 1:
+            self._music_stem_cache.popitem(last=False)
+        return stems
+
+    def _cached_music_stems(
+        self,
+        plan: SequencerPlaybackPlan,
+    ) -> tuple[np.ndarray, ...] | None:
+        stems = self._music_stem_cache.get(plan.stem_cache_key)
+        if stems is not None:
+            self._music_stem_cache.move_to_end(plan.stem_cache_key)
+        return stems
 
     def _cached_music_preview(self, plan: SequencerPlaybackPlan):
         cached = self._music_preview_cache.get(plan.cache_key)
@@ -859,13 +966,17 @@ class BlipkitApp(ctk.CTk):
             temp.unlink(missing_ok=True)
 
     def _request_music_render(self, plan: SequencerPlaybackPlan) -> None:
-        if self._cached_music_preview(plan) is not None:
+        rendered = self._cached_music_preview(plan)
+        stems = self._cached_music_stems(plan)
+        if stems is not None:
+            if rendered is None:
+                self._remember_music_preview(plan.cache_key, plan.mix_stems(stems))
             return
         if self._music_render_active_key is not None:
-            if self._music_render_active_key != plan.cache_key:
+            if self._music_render_active_key != plan.stem_cache_key:
                 self._music_render_pending_plan = plan
             return
-        self._music_render_active_key = plan.cache_key
+        self._music_render_active_key = plan.stem_cache_key
         threading.Thread(
             target=self._render_music_plan,
             args=(plan,),
@@ -875,37 +986,45 @@ class BlipkitApp(ctk.CTk):
 
     def _render_music_plan(self, plan: SequencerPlaybackPlan) -> None:
         try:
-            samples = plan.render_full()
+            samples, stems = plan.render_bundle()
             self._write_music_preview_cache(plan, samples)
             error = None
         except Exception as exc:
             samples = None
+            stems = None
             error = exc
-        self._music_render_results.put((plan, samples, error))
+        self._music_render_results.put((plan, samples, stems, error))
 
     def _poll_music_render_results(self) -> None:
         if self._closing:
             return
         while True:
             try:
-                plan, samples, error = self._music_render_results.get_nowait()
+                plan, samples, stems, error = self._music_render_results.get_nowait()
             except queue.Empty:
                 break
-            if self._music_render_active_key == plan.cache_key:
+            if self._music_render_active_key == plan.stem_cache_key:
                 self._music_render_active_key = None
             if error is None and samples is not None:
                 self._remember_music_preview(plan.cache_key, samples)
+            if error is None and stems is not None:
+                self._remember_music_stems(plan.stem_cache_key, stems)
             request = self._playback_request
-            if request is not None and request[1].cache_key == plan.cache_key:
+            if request is not None and request[1].stem_cache_key == plan.stem_cache_key:
                 request_id, request_plan, request_view = request
                 if error is not None:
                     self._cancel_pending_playback(f"预览失败：{error}")
-                elif samples is not None:
+                elif stems is not None:
+                    request_samples = request_plan.mix_stems(stems)
+                    self._remember_music_preview(
+                        request_plan.cache_key,
+                        request_samples,
+                    )
                     self._start_music_playback(
                         request_id,
                         request_plan,
                         request_view,
-                        samples,
+                        request_samples,
                     )
 
         if (
@@ -914,7 +1033,7 @@ class BlipkitApp(ctk.CTk):
         ):
             pending = self._music_render_pending_plan
             self._music_render_pending_plan = None
-            if self._cached_music_preview(pending) is None:
+            if self._cached_music_stems(pending) is None:
                 self._request_music_render(pending)
         self._music_render_poll_after_id = self.after(
             16,
@@ -976,6 +1095,37 @@ class BlipkitApp(ctk.CTk):
         )
         self.set_status("正在播放")
 
+    def _on_track_mix_change(self) -> None:
+        if not self._playing or not isinstance(self.current_view, SequencerView):
+            return
+        view = self.current_view
+        elapsed = self.player.current_time()
+        current_beat = min(
+            view.song.loop_end,
+            view._playhead_start_beat + elapsed * view.song.bpm / 60.0,
+        )
+        view.insert_beat = current_beat
+        plan = view.create_playback_plan(self.project.metadata.sample_rate)
+        rendered = self._cached_music_preview(plan)
+        if rendered is None:
+            stems = self._cached_music_stems(plan)
+            if stems is not None:
+                rendered = plan.mix_stems(stems)
+                self._remember_music_preview(plan.cache_key, rendered)
+        self.stop_playback()
+        view.insert_beat = current_beat
+        if rendered is None:
+            view.position_var.set(view._format_position(current_beat))
+            view.redraw()
+            self.after_idle(self.toggle_playback)
+            return
+        self._playback_request_id += 1
+        request_id = self._playback_request_id
+        self._playback_loading = True
+        self._playback_request = (request_id, plan, view)
+        view.set_playback_state(True)
+        self._start_music_playback(request_id, plan, view, rendered)
+
     def toggle_playback(self) -> None:
         if self._playing or self._playback_loading:
             self.stop_playback()
@@ -998,6 +1148,11 @@ class BlipkitApp(ctk.CTk):
                 return
             self._playback_request = (request_id, plan, view)
             cached = self._cached_music_preview(plan)
+            if cached is None:
+                stems = self._cached_music_stems(plan)
+                if stems is not None:
+                    cached = plan.mix_stems(stems)
+                    self._remember_music_preview(plan.cache_key, cached)
             if cached is not None:
                 self._start_music_playback(request_id, plan, view, cached)
             else:
