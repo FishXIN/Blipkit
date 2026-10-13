@@ -172,8 +172,8 @@ class SFXView(ctk.CTkFrame):
         browser.grid(row=0, column=0, sticky="nsew", padx=(12, 8), pady=(0, 12))
         browser.grid_propagate(False)
         browser.grid_columnconfigure(0, weight=1)
-        browser.grid_rowconfigure(2, weight=1)
-        browser.grid_rowconfigure(5, weight=1)
+        browser.grid_rowconfigure(2, weight=3)
+        browser.grid_rowconfigure(5, weight=2)
         self._build_preset_browser(browser)
         self._build_node_palette(browser)
 
@@ -375,8 +375,12 @@ class SFXView(ctk.CTkFrame):
     def _refresh_preset_list(self) -> None:
         for child in self.preset_list.winfo_children():
             child.destroy()
-        for name in preset_names(self.category_var.get()):
+        names = preset_names(self.category_var.get())
+        active_index = 0
+        for index, name in enumerate(names):
             active = name == self.patch.name
+            if active:
+                active_index = index
             button = ctk.CTkButton(
                 self.preset_list,
                 text=name,
@@ -390,6 +394,21 @@ class SFXView(ctk.CTkFrame):
                 command=lambda preset=name: self.select_preset(preset),
             )
             button.pack(fill="x", pady=1)
+        if len(names) > 1:
+            position = active_index / (len(names) - 1)
+            self.after_idle(lambda value=position: self._scroll_presets(value))
+
+    def _scroll_presets(self, position: float) -> None:
+        canvas = getattr(self.preset_list, "_parent_canvas", None)
+        if canvas is None:
+            return
+        canvas.update_idletasks()
+        if position >= 0.75:
+            canvas.yview_moveto(1.0)
+        elif position <= 0.25:
+            canvas.yview_moveto(0.0)
+        else:
+            canvas.yview_moveto(max(0.0, position - 0.25))
 
     def _node_selected(self, node_id: str | None) -> None:
         self._selected_node_id = node_id

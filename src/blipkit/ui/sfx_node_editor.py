@@ -89,6 +89,7 @@ class SFXNodeEditor(ctk.CTkFrame):
         self._connecting_from: str | None = None
         self.zoom = 0.7
         self._fit_pending = True
+        self._auto_fit = True
 
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -186,11 +187,15 @@ class SFXNodeEditor(ctk.CTkFrame):
         self.canvas.bind("<Configure>", self._canvas_configured)
 
     def _select_initial(self) -> None:
-        output = next(
-            (node for node in self.patch.graph_nodes if node.kind == "output"),
+        source = next(
+            (
+                node
+                for node in self.patch.graph_nodes
+                if not node_spec(node.kind).has_input
+            ),
             None,
         )
-        self.select(output.id if output else self.patch.graph_nodes[0].id)
+        self.select(source.id if source else self.patch.graph_nodes[0].id)
 
     def set_patch(self, patch: SFXPatch) -> None:
         self.patch = patch
@@ -198,6 +203,7 @@ class SFXNodeEditor(ctk.CTkFrame):
         ensure_patch_graph(self.patch)
         self.selected_id = None
         self._fit_pending = True
+        self._auto_fit = True
         if had_graph:
             self.redraw()
         else:
@@ -305,11 +311,13 @@ class SFXNodeEditor(ctk.CTkFrame):
     def zoom_in(self) -> None:
         self.zoom = min(1.2, self.zoom + 0.1)
         self._fit_pending = False
+        self._auto_fit = False
         self.redraw()
 
     def zoom_out(self) -> None:
         self.zoom = max(0.4, self.zoom - 0.1)
         self._fit_pending = False
+        self._auto_fit = False
         self.redraw()
 
     def fit_view(self) -> None:
@@ -333,12 +341,13 @@ class SFXNodeEditor(ctk.CTkFrame):
                 break
         self.zoom = fitted
         self._fit_pending = False
+        self._auto_fit = True
         self.canvas.xview_moveto(0.0)
         self.canvas.yview_moveto(0.0)
         self.redraw()
 
     def _canvas_configured(self, _event) -> None:
-        if self._fit_pending:
+        if self._fit_pending or self._auto_fit:
             self.after_idle(self.fit_view)
         else:
             self.redraw()
