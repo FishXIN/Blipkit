@@ -7,7 +7,7 @@ from pathlib import Path
 
 import mido
 
-from .models import Note, Song, Track
+from .models import Note, Song, Track, beats_per_bar
 
 TICKS_PER_BEAT = 480
 TRACK_COLORS = ("#006CFF", "#18A57A", "#B66B18", "#8B5CF6", "#D84A4A")
@@ -48,7 +48,7 @@ def export_song_midi(song: Song, path: Path) -> Path:
     conductor.append(
         mido.MetaMessage(
             "end_of_track",
-            time=max(1, round(song.bars * 4 * TICKS_PER_BEAT)),
+            time=max(1, round(song.total_beats * TICKS_PER_BEAT)),
         )
     )
 
@@ -156,7 +156,8 @@ def import_song_midi(path: Path, name: str | None = None) -> Song:
     if not tracks:
         tracks = [Track(name="主旋律")]
     midi_end = max_tick_seen / midi.ticks_per_beat
-    bars = max(1, math.ceil(max(max_end, midi_end) / 4.0))
+    bar_beats = beats_per_bar(signature)
+    bars = max(1, math.ceil(max(max_end, midi_end) / bar_beats))
     return Song(
         name=name or source.stem,
         bpm=bpm,
@@ -164,7 +165,7 @@ def import_song_midi(path: Path, name: str | None = None) -> Song:
         key=key,
         scale=scale,
         bars=bars,
-        loop_end=bars * 4.0,
+        loop_end=bars * bar_beats,
         tracks=tracks,
     )
 

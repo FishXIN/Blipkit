@@ -260,7 +260,7 @@ def render_song_stems(
     song: Song,
     sample_rate: int = 44100,
 ) -> tuple[np.ndarray, ...]:
-    total_beats = max(float(song.bars * 4), float(song.loop_end))
+    total_beats = max(song.total_beats, float(song.loop_end))
     frames = max(1, int(total_beats * 60.0 / song.bpm * sample_rate))
     stems = [
         np.zeros((frames, 2), dtype=np.float32)
@@ -329,7 +329,7 @@ def mix_song_stems(
     if stems:
         frames = len(stems[0])
     else:
-        total_beats = max(float(song.bars * 4), float(song.loop_end))
+        total_beats = max(song.total_beats, float(song.loop_end))
         frames = max(1, int(total_beats * 60.0 / song.bpm * sample_rate))
     mix = np.zeros((frames, 2), dtype=np.float32)
     for index in active_indices:
@@ -345,7 +345,7 @@ def render_song(
     loop_only: bool = False,
     stereo: bool = True,
 ) -> np.ndarray:
-    total_beats = max(float(song.bars * 4), float(song.loop_end))
+    total_beats = max(song.total_beats, float(song.loop_end))
     solo_tracks = [track for track in song.tracks if track.soloed and not track.muted]
     active_tracks = solo_tracks or [track for track in song.tracks if not track.muted]
     sampled_tracks = []
@@ -396,7 +396,11 @@ def render_song(
 
 
 def song_duration(song: Song, loop_only: bool = False) -> float:
-    beats = song.loop_end - song.loop_start if loop_only else max(song.bars * 4, song.loop_end)
+    beats = (
+        song.loop_end - song.loop_start
+        if loop_only
+        else max(song.total_beats, song.loop_end)
+    )
     return max(0.0, beats) * 60.0 / max(20, song.bpm)
 
 

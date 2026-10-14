@@ -246,7 +246,7 @@ class BlipkitProject:
                     name=song.name,
                     kind="music",
                     path=str(path),
-                    duration=max(song.bars * 4, song.loop_end) * 60.0 / song.bpm,
+                    duration=max(song.total_beats, song.loop_end) * 60.0 / song.bpm,
                     modified_at=path.stat().st_mtime,
                     synced=any((self.path / "exports").rglob(export_name(song.name))),
                 )

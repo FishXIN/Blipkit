@@ -246,6 +246,229 @@ def test_trackpad_small_deltas_scroll_both_scrollbars(editor) -> None:
     assert view.canvas.canvasy(0) > start_y
 
 
+def test_trackpad_pinch_zooms_around_pointer_anchor(editor) -> None:
+    view = editor.view
+    view._xview("moveto", "0.2")
+    editor.root.update()
+    anchor_x = 320
+    before_width = view.cell_w
+    before_beat = (
+        view.canvas.canvasx(anchor_x) - view.LABEL_W
+    ) / (view.SUBDIVISIONS * view.cell_w)
+
+    view._apply_trackpad_magnification(0.09, anchor_x)
+    editor.root.update()
+
+    after_beat = (
+        view.canvas.canvasx(anchor_x) - view.LABEL_W
+    ) / (view.SUBDIVISIONS * view.cell_w)
+    assert view.cell_w > before_width
+    assert view.cell_w < before_width * 1.5
+    assert after_beat == pytest.approx(before_beat, abs=0.05)
+
+
+def test_piano_roll_zoom_out_fits_entire_song(editor) -> None:
+    view = editor.view
+    editor.root.update()
+    viewport = view.canvas.winfo_width()
+    columns = view.song.total_beats * view.SUBDIVISIONS
+
+    view.zoom_horizontal(-400)
+    editor.root.update()
+
+    expected = (viewport - view.LABEL_W - 2) / columns
+    assert view.cell_w == pytest.approx(expected)
+    assert view.canvas.xview() == pytest.approx((0.0, 1.0))
+    assert editor.events[-1] == "时间轴缩放：整首适配"
+
+
+def test_piano_roll_allows_deep_zoom_in(editor) -> None:
+    view = editor.view
+
+    view.zoom_horizontal(400)
+    editor.root.update()
+
+    assert view.cell_w == pytest.approx(4096.0)
+    assert view.cell_w > 46
+
+
+def test_arrangement_zoom_out_fits_entire_song(editor) -> None:
+    view = editor.view
+    view.set_editor_view("编排")
+    editor.root.update()
+    viewport = view.arrangement_view.timeline.winfo_width()
+    columns = view.song.total_beats * view.SUBDIVISIONS
+
+    view.zoom_horizontal(-400)
+    editor.root.update()
+
+    expected = (viewport - 2) / columns
+    assert view.arrangement_cell_w == pytest.approx(expected)
+    assert view.arrangement_view.timeline.xview() == pytest.approx((0.0, 1.0))
+
+
+def test_piano_zoom_coalesces_full_redraws(editor, monkeypatch) -> None:
+    view = editor.view
+    piano_redraws = 0
+    arrangement_redraws = 0
+    original_piano_redraw = view._redraw_piano_roll
+    original_arrangement_redraw = view._redraw_arrangement
+
+    def counted_piano_redraw() -> None:
+        nonlocal piano_redraws
+        piano_redraws += 1
+        original_piano_redraw()
+
+    def counted_arrangement_redraw() -> None:
+        nonlocal arrangement_redraws
+        arrangement_redraws += 1
+        original_arrangement_redraw()
+
+    monkeypatch.setattr(view, "_redraw_piano_roll", counted_piano_redraw)
+    monkeypatch.setattr(view, "_redraw_arrangement", counted_arrangement_redraw)
+    note_item = view._note_rect_items[editor.note.id]
+
+    for _step in range(12):
+        view.zoom_horizontal(4, anchor_x=320)
+
+    assert piano_redraws == 0
+    assert arrangement_redraws == 0
+    assert view._note_rect_items[editor.note.id] == note_item
+
+    editor.root.after(150, editor.root.quit)
+    editor.root.mainloop()
+
+    assert piano_redraws == 1
+    assert arrangement_redraws == 0
+
+
+def test_arrangement_zoom_coalesces_full_redraws(editor, monkeypatch) -> None:
+    view = editor.view
+    view.set_editor_view("编排")
+    piano_redraws = 0
+    arrangement_redraws = 0
+    original_piano_redraw = view._redraw_piano_roll
+    original_arrangement_redraw = view._redraw_arrangement
+
+    def counted_piano_redraw() -> None:
+        nonlocal piano_redraws
+        piano_redraws += 1
+        original_piano_redraw()
+
+    def counted_arrangement_redraw() -> None:
+        nonlocal arrangement_redraws
+        arrangement_redraws += 1
+        original_arrangement_redraw()
+
+    monkeypatch.setattr(view, "_redraw_piano_roll", counted_piano_redraw)
+    monkeypatch.setattr(view, "_redraw_arrangement", counted_arrangement_redraw)
+
+    for _step in range(12):
+        view.zoom_horizontal(4, anchor_x=320)
+
+    assert piano_redraws == 0
+    assert arrangement_redraws == 0
+
+    editor.root.after(150, editor.root.quit)
+    editor.root.mainloop()
+
+    assert piano_redraws == 0
+    assert arrangement_redraws == 1
+
+
+def test_draw_tool_opens_piano_roll_from_arrangement(editor) -> None:
+    view = editor.view
+    view.set_editor_view("编排")
+
+    view.set_tool("画笔")
+    editor.root.update()
+
+    assert view.view_var.get() == "钢琴卷帘"
+    assert view.tool_var.get() == "画笔"
+    assert "画笔模式" in editor.events[-1]
+
+
+def test_brush_drag_updates_only_active_note_until_release(editor) -> None:
+    view = editor.view
+    view.set_tool("画笔")
+    editor.events.clear()
+    pitch = 64
+    y = round(
+        view.RULER_H
+        + (view.PITCH_HIGH - pitch + 0.5) * view.ROW_H
+    )
+    start_x = _x_at_beat(view, 2.0)
+    view.canvas.event_generate("<Button-1>", x=start_x, y=y)
+    editor.root.update()
+    assert view._drawing_note is not None
+
+    redraws = 0
+    original_redraw = view.redraw
+
+    def counted_redraw() -> None:
+        nonlocal redraws
+        redraws += 1
+        original_redraw()
+
+    view.redraw = counted_redraw
+    for step in range(1, 25):
+        view.canvas.event_generate(
+            "<B1-Motion>",
+            x=_x_at_beat(view, 2.0 + step * 0.125),
+            y=y,
+            state=0x0100,
+        )
+        editor.root.update()
+
+    assert redraws == 0
+    assert "seek" not in editor.events
+    view.canvas.event_generate(
+        "<ButtonRelease-1>",
+        x=_x_at_beat(view, 5.0),
+        y=y,
+    )
+    editor.root.update()
+    assert redraws == 1
+    assert "mix" in editor.events
+
+
+def test_toolbar_switches_report_state_and_refresh_playback(editor) -> None:
+    view = editor.view
+    editor.events.clear()
+
+    view.preview_var.set(False)
+    view._preview_changed()
+    view.scale_warning_var.set(False)
+    view._scale_warning_changed()
+    view.loop_var.set(True)
+    view._loop_changed()
+    view.metronome_var.set(True)
+    view._metronome_changed()
+
+    assert "音符试听已关闭" in editor.events
+    assert "音阶高亮已关闭" in editor.events
+    assert "循环播放已开启" in editor.events
+    assert "节拍器已开启" in editor.events
+    assert "mix" in editor.events
+
+
+def test_time_signature_changes_real_timeline_geometry(editor) -> None:
+    view = editor.view
+    editor.events.clear()
+    view.signature_var.set("3/4")
+
+    view._option_changed()
+    editor.root.update()
+
+    assert view.song.beats_per_bar == 3
+    assert view.song.total_beats == 12
+    assert view.song.loop_end == 12
+    assert view._format_position(3) == "02:01:01"
+    assert "change" in editor.events
+    assert "mix" in editor.events
+    assert any("3/4" in event for event in editor.events)
+
+
 def test_plain_arrow_moves_playhead_without_editing_selected_note(editor) -> None:
     view = editor.view
     view._set_edit_cursor(2.0, seek=False)
@@ -367,10 +590,28 @@ def test_blank_drag_marquee_selects_without_moving_playhead(editor) -> None:
         y=round(y2 + 2),
         state=0x0100,
     )
+    view.canvas.update()
+    marquee = view.canvas.find_withtag("marquee")
+    assert len(marquee) == 1
+    marquee_item = marquee[0]
+    assert view.canvas.itemcget(marquee_item, "fill") == "#EAF2FF"
+    assert view.canvas.itemcget(marquee_item, "stipple") == "gray25"
+    stacking_order = view.canvas.find_all()
+    note_item = view._note_rect_items[editor.note.id]
+    assert stacking_order.index(marquee_item) < stacking_order.index(note_item)
+
+    view.canvas.event_generate(
+        "<B1-Motion>",
+        x=end_x + 2,
+        y=round(y2 + 4),
+        state=0x0100,
+    )
+    view.canvas.update()
+    assert view.canvas.find_withtag("marquee") == (marquee_item,)
     view.canvas.event_generate(
         "<ButtonRelease-1>",
-        x=end_x,
-        y=round(y2 + 2),
+        x=end_x + 2,
+        y=round(y2 + 4),
     )
     view.canvas.update()
 

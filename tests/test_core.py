@@ -39,6 +39,11 @@ class SoundbankTests(unittest.TestCase):
         self.assertTrue(is_in_scale(60, "C", "Major"))
         self.assertFalse(is_in_scale(61, "C", "Major"))
 
+    def test_song_length_follows_time_signature(self):
+        self.assertEqual(Song(name="waltz", bars=8, time_signature="3/4").total_beats, 24)
+        self.assertEqual(Song(name="six eight", bars=8, time_signature="6/8").total_beats, 24)
+        self.assertEqual(Song(name="five four", bars=8, time_signature="5/4").total_beats, 40)
+
     def test_all_instrument_presets_render_cleanly(self):
         note = Note(pitch=60, start=0, duration=0.25, velocity=100)
         rendered_voices = set()

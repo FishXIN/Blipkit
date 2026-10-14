@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import tkinter as tk
 from collections.abc import Callable
@@ -126,7 +127,7 @@ class ArrangementView(ctk.CTkFrame):
         song: Song,
         selected_track_index: int,
         insert_beat: float,
-        cell_w: int,
+        cell_w: float,
     ) -> None:
         self.song = song
         self.selected_track_index = selected_track_index
@@ -138,7 +139,7 @@ class ArrangementView(ctk.CTkFrame):
         self.headers.delete("all")
         self._note_items.clear()
 
-        width = max(1, song.bars * 4 * self.SUBDIVISIONS * cell_w)
+        width = max(1, song.total_beats * self.SUBDIVISIONS * cell_w)
         height = self.RULER_H + max(1, len(song.tracks)) * self.ROW_H
         self.timeline.configure(scrollregion=(0, 0, width, height))
         self.headers.configure(scrollregion=(0, 0, self.HEADER_W, height))
@@ -203,12 +204,16 @@ class ArrangementView(ctk.CTkFrame):
             )
             self._draw_track_notes(index, track.notes, track.color, top)
 
-        for subdivision in range(song.bars * 4 * self.SUBDIVISIONS + 1):
+        columns = round(song.total_beats * self.SUBDIVISIONS)
+        bar_columns = max(1, round(song.beats_per_bar * self.SUBDIVISIONS))
+        for subdivision in range(columns + 1):
             x = subdivision * cell_w
-            if subdivision % (self.SUBDIVISIONS * 4) == 0:
+            if subdivision % bar_columns == 0:
                 color, line_width = T.GRID_BAR, 2
             elif subdivision % self.SUBDIVISIONS == 0:
                 color, line_width = T.GRID_BEAT, 1
+            elif cell_w < 5:
+                continue
             else:
                 color, line_width = T.GRID_SUB, 1
             self.timeline.create_line(
@@ -225,6 +230,20 @@ class ArrangementView(ctk.CTkFrame):
         self._yview("moveto", y_fraction)
         self._refresh_overlays()
         self.set_playhead(insert_beat)
+
+    def preview_horizontal_zoom(self, cell_w: float) -> None:
+        if self.song is None or cell_w <= 0 or self.cell_w <= 0:
+            return
+        factor = cell_w / self.cell_w
+        if abs(factor - 1.0) < 0.0001:
+            return
+        self.timeline.scale("all", 0, 0, factor, 1)
+        self.cell_w = cell_w
+        width = max(1.0, self.song.total_beats * self.SUBDIVISIONS * cell_w)
+        height = self.RULER_H + max(1, len(self.song.tracks)) * self.ROW_H
+        self.timeline.configure(scrollregion=(0, 0, width, height))
+        self.timeline.delete("arrange_hover")
+        self._refresh_overlays()
 
     def _draw_track_notes(
         self,
@@ -271,8 +290,12 @@ class ArrangementView(ctk.CTkFrame):
             outline="",
             tags="arrange_ruler",
         )
-        for bar in range(self.song.bars + 1):
-            x = bar * 4 * self.SUBDIVISIONS * self.cell_w
+        bar_width = (
+            self.song.beats_per_bar * self.SUBDIVISIONS * self.cell_w
+        )
+        label_step = max(1, math.ceil(42 / max(1.0, bar_width)))
+        for bar in range(0, self.song.bars + 1, label_step):
+            x = bar * self.song.beats_per_bar * self.SUBDIVISIONS * self.cell_w
             if left <= x <= right:
                 self.timeline.create_text(
                     x + 5,
@@ -316,7 +339,7 @@ class ArrangementView(ctk.CTkFrame):
     def set_playhead(self, beat: float, auto_scroll: bool = False) -> None:
         if self.song is None:
             return
-        self.insert_beat = max(0.0, min(beat, self.song.bars * 4.0))
+        self.insert_beat = max(0.0, min(beat, self.song.total_beats))
         x = self.insert_beat * self.SUBDIVISIONS * self.cell_w
         top = self.timeline.canvasy(0)
         height = self.RULER_H + max(1, len(self.song.tracks)) * self.ROW_H
@@ -346,7 +369,7 @@ class ArrangementView(ctk.CTkFrame):
             left = self.timeline.canvasx(0)
             right = self.timeline.canvasx(self.timeline.winfo_width())
             if x > right - 40 or x < left:
-                total = self.song.bars * 4 * self.SUBDIVISIONS * self.cell_w
+                total = self.song.total_beats * self.SUBDIVISIONS * self.cell_w
                 target = (x - self.timeline.winfo_width() * 0.25) / max(1, total)
                 self._xview("moveto", max(0.0, min(1.0, target)))
 
@@ -422,7 +445,7 @@ class ArrangementView(ctk.CTkFrame):
         if self.song is None:
             return
         beat = self.timeline.canvasx(event.x) / (self.SUBDIVISIONS * self.cell_w)
-        self.on_seek(max(0.0, min(beat, self.song.bars * 4.0)))
+        self.on_seek(max(0.0, min(beat, self.song.total_beats)))
 
     def _timeline_motion(self, event) -> None:
         if self.song is None or event.y < self.RULER_H:
@@ -490,7 +513,7 @@ class ArrangementView(ctk.CTkFrame):
         if self.song is None:
             return
         if horizontal:
-            total = self.song.bars * 4 * self.SUBDIVISIONS * self.cell_w
+            total = self.song.total_beats * self.SUBDIVISIONS * self.cell_w
             viewport = self.timeline.winfo_width()
             offset = self.timeline.xview()[0] * total + horizontal
             offset = max(0.0, min(offset, max(0.0, total - viewport)))

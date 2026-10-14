@@ -12,6 +12,14 @@ def _id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:10]}"
 
 
+def beats_per_bar(time_signature: str) -> float:
+    try:
+        numerator, denominator = time_signature.split("/", 1)
+        return max(1.0, int(numerator) * 4.0 / max(1, int(denominator)))
+    except (AttributeError, ValueError):
+        return 4.0
+
+
 @dataclass
 class Note:
     pitch: int
@@ -87,21 +95,32 @@ class Song:
     mood_markers: list[MoodMarker] = field(default_factory=list)
     id: str = field(default_factory=lambda: _id("song"))
 
+    @property
+    def beats_per_bar(self) -> float:
+        return beats_per_bar(self.time_signature)
+
+    @property
+    def total_beats(self) -> float:
+        return self.bars * self.beats_per_bar
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Song:
         bars = int(data.get("bars", 4))
+        time_signature = str(data.get("time_signature", "4/4"))
         return cls(
             name=str(data.get("name", "Untitled")),
             bpm=int(data.get("bpm", 120)),
-            time_signature=str(data.get("time_signature", "4/4")),
+            time_signature=time_signature,
             key=str(data.get("key", "C")),
             scale=str(data.get("scale", "Major")),
             bars=bars,
             loop_start=float(data.get("loop_start", 0.0)),
-            loop_end=float(data.get("loop_end", bars * 4)),
+            loop_end=float(
+                data.get("loop_end", bars * beats_per_bar(time_signature))
+            ),
             tracks=[Track.from_dict(item) for item in data.get("tracks", [])],
             mood_markers=[MoodMarker.from_dict(item) for item in data.get("mood_markers", [])],
             id=str(data.get("id") or _id("song")),

@@ -7,6 +7,7 @@ import sys
 import threading
 import tkinter as tk
 from collections import OrderedDict
+from dataclasses import replace
 from pathlib import Path
 from tkinter import filedialog
 
@@ -48,6 +49,7 @@ class BlipkitApp(ctk.CTk):
         self.settings = AppSettings.load()
         self.project = self._initial_project()
         self.player = AudioPlayer()
+        self.audition_player = AudioPlayer()
         self.current_song = self._first_song()
         self.current_sfx = self._first_sfx()
         self.current_view = None
@@ -67,6 +69,9 @@ class BlipkitApp(ctk.CTk):
         self._music_render_warm_after_id: str | None = None
         self._music_render_poll_after_id: str | None = None
         self._playback_request = None
+        self._mix_update_id = 0
+        self._mix_update_request = None
+        self._mix_update_results = queue.SimpleQueue()
         self._closing = False
         self._nav_buttons: dict[str, ctk.CTkButton] = {}
         self._asset_buttons: list[ctk.CTkButton] = []
@@ -85,6 +90,12 @@ class BlipkitApp(ctk.CTk):
             target=self.player.prepare,
             args=(self.project.metadata.sample_rate,),
             name="blipkit-audio-prepare",
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=self.audition_player.prepare,
+            args=(self.project.metadata.sample_rate,),
+            name="blipkit-audition-prepare",
             daemon=True,
         ).start()
         self.after(self.settings.autosave_seconds * 1000, self._autosave)
@@ -401,6 +412,28 @@ class BlipkitApp(ctk.CTk):
         self.bind_all(f"<{modifier}-z>", self._shortcut_undo)
         self.bind_all(f"<{modifier}-a>", self._shortcut_select_all)
         self.bind_all(f"<{modifier}-Shift-z>", self._shortcut_redo)
+        self.bind_all(f"<{modifier}-Shift-Z>", self._shortcut_redo)
+        self.bind_all(f"<{modifier}-y>", self._shortcut_redo)
+        self.bind_all(f"<{modifier}-Shift-a>", self._shortcut_deselect_all)
+        self.bind_all(f"<{modifier}-Shift-A>", self._shortcut_deselect_all)
+        self.bind_all("<Escape>", self._shortcut_deselect_all)
+        if sys.platform == "darwin":
+            control_aliases = {
+                "z": self._shortcut_undo,
+                "Shift-z": self._shortcut_redo,
+                "Shift-Z": self._shortcut_redo,
+                "y": self._shortcut_redo,
+                "a": self._shortcut_select_all,
+                "Shift-a": self._shortcut_deselect_all,
+                "Shift-A": self._shortcut_deselect_all,
+                "c": self._shortcut_copy,
+                "x": self._shortcut_cut,
+                "v": self._shortcut_paste,
+                "d": self._shortcut_duplicate,
+                "b": self._shortcut_split,
+            }
+            for sequence, callback in control_aliases.items():
+                self.bind_all(f"<Control-{sequence}>", callback)
         self.bind_all(
             f"<{modifier}-backslash>",
             self._shortcut_toggle_sidebar,
@@ -585,6 +618,14 @@ class BlipkitApp(ctk.CTk):
             return None
         if hasattr(self.current_view, "select_all_notes"):
             self.current_view.select_all_notes()
+            return "break"
+        return None
+
+    def _shortcut_deselect_all(self, event=None):
+        if event is not None and self._is_text_input(event):
+            return None
+        if hasattr(self.current_view, "clear_note_selection"):
+            self.current_view.clear_note_selection()
             return "break"
         return None
 
@@ -1026,7 +1067,31 @@ class BlipkitApp(ctk.CTk):
                         request_view,
                         request_samples,
                     )
+            mix_request = self._mix_update_request
+            if (
+                mix_request is not None
+                and mix_request[1].stem_cache_key == plan.stem_cache_key
+            ):
+                mix_id, mix_plan, mix_view = mix_request
+                self._mix_update_request = None
+                if error is not None:
+                    self.set_status(f"混音更新失败：{error}")
+                elif samples is not None and mix_plan.cache_key == plan.cache_key:
+                    self._queue_mix_preparation(
+                        mix_id,
+                        mix_plan,
+                        mix_view,
+                        rendered=samples,
+                    )
+                elif stems is not None:
+                    self._queue_mix_preparation(
+                        mix_id,
+                        mix_plan,
+                        mix_view,
+                        stems=stems,
+                    )
 
+        self._poll_prepared_mix_updates()
         if (
             self._music_render_active_key is None
             and self._music_render_pending_plan is not None
@@ -1099,6 +1164,8 @@ class BlipkitApp(ctk.CTk):
         if not self._playing or not isinstance(self.current_view, SequencerView):
             return
         view = self.current_view
+        self._mix_update_id += 1
+        mix_id = self._mix_update_id
         elapsed = self.player.current_time()
         current_beat = min(
             view.song.loop_end,
@@ -1107,24 +1174,148 @@ class BlipkitApp(ctk.CTk):
         view.insert_beat = current_beat
         plan = view.create_playback_plan(self.project.metadata.sample_rate)
         rendered = self._cached_music_preview(plan)
-        if rendered is None:
-            stems = self._cached_music_stems(plan)
-            if stems is not None:
-                rendered = plan.mix_stems(stems)
-                self._remember_music_preview(plan.cache_key, rendered)
-        self.stop_playback()
-        view.insert_beat = current_beat
-        if rendered is None:
-            view.position_var.set(view._format_position(current_beat))
-            view.redraw()
-            self.after_idle(self.toggle_playback)
+        stems = None if rendered is not None else self._cached_music_stems(plan)
+        if rendered is None and stems is None:
+            self._mix_update_request = (mix_id, plan, view)
+            self._request_music_render(plan)
             return
-        self._playback_request_id += 1
-        request_id = self._playback_request_id
-        self._playback_loading = True
-        self._playback_request = (request_id, plan, view)
-        view.set_playback_state(True)
-        self._start_music_playback(request_id, plan, view, rendered)
+        self._mix_update_request = None
+        self._queue_mix_preparation(
+            mix_id,
+            plan,
+            view,
+            rendered=rendered,
+            stems=stems,
+        )
+
+    def _queue_mix_preparation(
+        self,
+        mix_id: int,
+        plan: SequencerPlaybackPlan,
+        view: SequencerView,
+        *,
+        rendered=None,
+        stems: tuple[np.ndarray, ...] | None = None,
+    ) -> None:
+        if (
+            mix_id != self._mix_update_id
+            or not self._playing
+            or self.current_view is not view
+        ):
+            return
+        audio_time = self.player.current_time()
+        current_beat = min(
+            view.song.loop_end,
+            view._playhead_start_beat + audio_time * view.song.bpm / 60.0,
+        )
+        prepared_plan = replace(plan, start_beat=current_beat)
+        threading.Thread(
+            target=self._prepare_mix_update,
+            args=(
+                mix_id,
+                prepared_plan,
+                view,
+                rendered,
+                stems,
+                audio_time,
+            ),
+            name="blipkit-live-mix",
+            daemon=True,
+        ).start()
+
+    def _prepare_mix_update(
+        self,
+        mix_id: int,
+        plan: SequencerPlaybackPlan,
+        view: SequencerView,
+        rendered,
+        stems: tuple[np.ndarray, ...] | None,
+        audio_time: float,
+    ) -> None:
+        try:
+            if rendered is None:
+                if stems is None:
+                    raise RuntimeError("No cached stems are available")
+                rendered = plan.mix_stems(stems)
+            samples = plan.output_from(rendered)
+            error = None
+        except Exception as exc:
+            samples = None
+            error = exc
+        self._mix_update_results.put(
+            (mix_id, plan, view, samples, rendered, audio_time, error)
+        )
+
+    def _poll_prepared_mix_updates(self) -> None:
+        while True:
+            try:
+                (
+                    mix_id,
+                    plan,
+                    view,
+                    samples,
+                    rendered,
+                    audio_time,
+                    error,
+                ) = self._mix_update_results.get_nowait()
+            except queue.Empty:
+                return
+            if (
+                mix_id != self._mix_update_id
+                or not self._playing
+                or self.current_view is not view
+            ):
+                continue
+            if error is not None or samples is None:
+                self.set_status(f"混音更新失败：{error}")
+                continue
+            self._remember_music_preview(plan.cache_key, rendered)
+            elapsed = self.player.current_time()
+            lag_seconds = max(0.0, elapsed - audio_time)
+            lag_frames = min(
+                len(samples),
+                round(lag_seconds * plan.sample_rate),
+            )
+            if lag_frames >= len(samples):
+                continue
+            current_beat = min(
+                view.song.loop_end,
+                plan.start_beat + lag_seconds * view.song.bpm / 60.0,
+            )
+            self._commit_mix_update(
+                plan,
+                view,
+                samples[lag_frames:],
+                current_beat,
+            )
+
+    def _commit_mix_update(
+        self,
+        plan: SequencerPlaybackPlan,
+        view: SequencerView,
+        samples,
+        current_beat: float,
+    ) -> None:
+        try:
+            started = self.player.replace(samples, plan.sample_rate)
+        except Exception as exc:
+            self.set_status(f"混音更新失败：{exc}")
+            return
+        if not started:
+            self.set_status("混音更新失败：系统音频不可用")
+            return
+        view.insert_beat = current_beat
+        if self._playback_after_id is not None:
+            try:
+                self.after_cancel(self._playback_after_id)
+            except (ValueError, tk.TclError):
+                pass
+        view.start_playhead(self.player.current_time)
+        duration = max(0.05, len(samples) / float(plan.sample_rate))
+        self._playback_after_id = self.after(
+            int(duration * 1000) + 80,
+            self._playback_finished,
+        )
 
     def toggle_playback(self) -> None:
         if self._playing or self._playback_loading:
@@ -1168,7 +1359,6 @@ class BlipkitApp(ctk.CTk):
             self._cancel_pending_playback(f"预览失败：{exc}")
 
     def preview_note(self, pitch: int, instrument: str, velocity: int = 100) -> None:
-        self.stop_playback()
         sample_rate = self.project.metadata.sample_rate
         note = Note(pitch=pitch, start=0, duration=0.45, velocity=velocity)
         samples = render_note(
@@ -1177,7 +1367,7 @@ class BlipkitApp(ctk.CTk):
             get_instrument_preset(instrument),
             sample_rate,
         )
-        self.player.play(samples, sample_rate)
+        self.audition_player.play(samples, sample_rate)
 
     def import_midi(self) -> None:
         selected = filedialog.askopenfilename(
@@ -1236,7 +1426,9 @@ class BlipkitApp(ctk.CTk):
 
     def stop_playback(self, completed: bool = False) -> None:
         self._playback_request_id += 1
+        self._mix_update_id += 1
         self._playback_request = None
+        self._mix_update_request = None
         self._playback_loading = False
         if self._playback_after_id is not None:
             try:
@@ -1376,6 +1568,7 @@ class BlipkitApp(ctk.CTk):
             if self.dirty:
                 self.save_current()
             self.player.close()
+            self.audition_player.close()
             self.project.close()
         finally:
             self.destroy()
