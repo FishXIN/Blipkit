@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,12 +24,35 @@ class ExportResult:
 ProgressCallback = Callable[[int, int, str], None]
 
 
-def _channels(project: BlipkitProject) -> int:
+class ExportSnapshot:
+    """Capture inputs on the UI thread; render and record with no shared SQLite connection."""
+
+    def __init__(self, project: BlipkitProject):
+        self.path = project.path
+        self.metadata = copy.deepcopy(project.metadata)
+        self._songs = copy.deepcopy(project.load_songs())
+        self._patches = copy.deepcopy(project.load_sfx())
+
+    def load_songs(self):
+        return self._songs
+
+    def load_sfx(self):
+        return self._patches
+
+    def record(self, *args):
+        project = BlipkitProject.open(self.path)
+        try:
+            project.record(*args)
+        finally:
+            project.close()
+
+
+def _channels(project: BlipkitProject | ExportSnapshot) -> int:
     return 1 if project.metadata.channels.lower() == "mono" else 2
 
 
 def export_project(
-    project: BlipkitProject,
+    project: BlipkitProject | ExportSnapshot,
     destination: Path | None = None,
     engine: str | None = None,
     audio_format: str | None = None,

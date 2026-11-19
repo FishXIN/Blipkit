@@ -15,18 +15,18 @@ import customtkinter as ctk
 import numpy as np
 
 from blipkit import __version__
+from blipkit.core.audition import NoteAuditioner
 from blipkit.core.config import AppSettings, data_dir
 from blipkit.core.engine_bridge import validate_engine_path
-from blipkit.core.export import export_project
+from blipkit.core.export import ExportSnapshot, export_project
 from blipkit.core.midi_io import export_song_midi, import_song_midi
-from blipkit.core.models import AssetInfo, Note, SFXPatch, Song, Track
+from blipkit.core.models import AssetInfo, SFXPatch, Song, Track
 from blipkit.core.playback import AudioPlayer
 from blipkit.core.project import BlipkitProject
-from blipkit.core.sequencer import render_note
 from blipkit.core.sfx_synth import get_preset
-from blipkit.core.soundbank import get_preset as get_instrument_preset
 
 from . import tokens as T
+from .editor_shortcuts import handle_editor_key
 from .library_view import LibraryView
 from .sequencer_view import SequencerPlaybackPlan, SequencerView
 from .settings_view import SettingsView
@@ -50,6 +50,7 @@ class BlipkitApp(ctk.CTk):
         self.project = self._initial_project()
         self.player = AudioPlayer()
         self.audition_player = AudioPlayer()
+        self.note_auditioner = NoteAuditioner()
         self.current_song = self._first_song()
         self.current_sfx = self._first_sfx()
         self.current_view = None
@@ -73,6 +74,11 @@ class BlipkitApp(ctk.CTk):
         self._mix_update_request = None
         self._mix_update_results = queue.SimpleQueue()
         self._closing = False
+        self._editor_sessions = {}
+        self._shared_note_clipboard = []
+        self._transport_origin = 0.0
+        self._export_running = False
+        self._export_events = queue.SimpleQueue()
         self._nav_buttons: dict[str, ctk.CTkButton] = {}
         self._asset_buttons: list[ctk.CTkButton] = []
 
@@ -396,113 +402,60 @@ class BlipkitApp(ctk.CTk):
 
     def _bind_shortcuts(self) -> None:
         modifier = "Command" if sys.platform == "darwin" else "Control"
-        self.bind_all(f"<{modifier}-s>", self._shortcut_save)
-        self.bind_all(f"<{modifier}-o>", self._shortcut_open)
-        self.bind_all(f"<{modifier}-n>", self._shortcut_new)
-        self.bind_all(f"<{modifier}-e>", self._shortcut_export)
-        self.bind_all(f"<{modifier}-i>", self._shortcut_import)
+        self.bind_all("<KeyPress>", self._shortcut_editor)
+        for mod in {modifier, "Control"}:
+            for key in (
+                "a",
+                "b",
+                "c",
+                "d",
+                "x",
+                "v",
+                "z",
+                "y",
+                "Shift-Z",
+                "Shift-z",
+                "Shift-A",
+                "Shift-a",
+            ):
+                self.bind_all(f"<{mod}-{key}>", self._shortcut_editor)
+            for key, callback in {
+                "s": self._shortcut_save,
+                "o": self._shortcut_open,
+                "n": self._shortcut_new,
+                "r": self._shortcut_export,
+                "e": self._shortcut_export,
+                "i": self._shortcut_import,
+                "backslash": self._shortcut_toggle_sidebar,
+                "space": self._shortcut_pause,
+            }.items():
+                self.bind_all(f"<{mod}-{key}>", callback)
         self.bind_all("<space>", self._shortcut_play)
-        self.bind_all("<Delete>", self._shortcut_delete)
-        self.bind_all("<BackSpace>", self._shortcut_delete)
-        self.bind_all(f"<{modifier}-c>", self._shortcut_copy)
-        self.bind_all(f"<{modifier}-x>", self._shortcut_cut)
-        self.bind_all(f"<{modifier}-v>", self._shortcut_paste)
-        self.bind_all(f"<{modifier}-b>", self._shortcut_split)
-        self.bind_all(f"<{modifier}-d>", self._shortcut_duplicate)
-        self.bind_all(f"<{modifier}-z>", self._shortcut_undo)
-        self.bind_all(f"<{modifier}-a>", self._shortcut_select_all)
-        self.bind_all(f"<{modifier}-Shift-z>", self._shortcut_redo)
-        self.bind_all(f"<{modifier}-Shift-Z>", self._shortcut_redo)
-        self.bind_all(f"<{modifier}-y>", self._shortcut_redo)
-        self.bind_all(f"<{modifier}-Shift-a>", self._shortcut_deselect_all)
-        self.bind_all(f"<{modifier}-Shift-A>", self._shortcut_deselect_all)
-        self.bind_all("<Escape>", self._shortcut_deselect_all)
-        if sys.platform == "darwin":
-            control_aliases = {
-                "z": self._shortcut_undo,
-                "Shift-z": self._shortcut_redo,
-                "Shift-Z": self._shortcut_redo,
-                "y": self._shortcut_redo,
-                "a": self._shortcut_select_all,
-                "Shift-a": self._shortcut_deselect_all,
-                "Shift-A": self._shortcut_deselect_all,
-                "c": self._shortcut_copy,
-                "x": self._shortcut_cut,
-                "v": self._shortcut_paste,
-                "d": self._shortcut_duplicate,
-                "b": self._shortcut_split,
-            }
-            for sequence, callback in control_aliases.items():
-                self.bind_all(f"<Control-{sequence}>", callback)
-        self.bind_all(
-            f"<{modifier}-backslash>",
-            self._shortcut_toggle_sidebar,
-        )
-        self.bind_all(f"<{modifier}-equal>", lambda event: self._shortcut_zoom(event, 4))
-        self.bind_all(f"<{modifier}-plus>", lambda event: self._shortcut_zoom(event, 4))
-        self.bind_all(f"<{modifier}-minus>", lambda event: self._shortcut_zoom(event, -4))
-        self.bind_all(
-            f"<{modifier}-1>",
-            lambda event: self._shortcut_editor_view(event, "编排"),
-        )
-        self.bind_all(
-            f"<{modifier}-2>",
-            lambda event: self._shortcut_editor_view(event, "钢琴卷帘"),
-        )
-        self.bind_all("<Left>", lambda event: self._shortcut_seek(event, steps=-1))
-        self.bind_all("<Right>", lambda event: self._shortcut_seek(event, steps=1))
-        self.bind_all("<Up>", lambda event: self._shortcut_jump(event, direction=-1))
-        self.bind_all("<Down>", lambda event: self._shortcut_jump(event, direction=1))
-        self.bind_all("<Home>", lambda event: self._shortcut_edge(event, end=False))
-        self.bind_all("<End>", lambda event: self._shortcut_edge(event, end=True))
-        self.bind_all(
-            "<KeyPress-q>",
-            lambda event: self._shortcut_trim(event, side="left"),
-        )
-        self.bind_all(
-            "<KeyPress-w>",
-            lambda event: self._shortcut_trim(event, side="right"),
-        )
-        self.bind_all(
-            "<KeyPress-e>",
-            lambda event: self._shortcut_move_track(event, offset=-1),
-        )
-        self.bind_all(
-            "<KeyPress-r>",
-            lambda event: self._shortcut_move_track(event, offset=1),
-        )
-        self.bind_all(
-            f"<{modifier}-Left>",
-            lambda event: self._shortcut_nudge(event, beats=-1),
-        )
-        self.bind_all(
-            f"<{modifier}-Right>",
-            lambda event: self._shortcut_nudge(event, beats=1),
-        )
-        self.bind_all(
-            f"<{modifier}-Up>",
-            lambda event: self._shortcut_nudge(event, pitches=1),
-        )
-        self.bind_all(
-            f"<{modifier}-Down>",
-            lambda event: self._shortcut_nudge(event, pitches=-1),
-        )
-        self.bind_all(
-            f"<{modifier}-Shift-Up>",
-            lambda event: self._shortcut_nudge(event, pitches=12),
-        )
-        self.bind_all(
-            f"<{modifier}-Shift-Down>",
-            lambda event: self._shortcut_nudge(event, pitches=-12),
-        )
-        self.bind_all(
-            f"<{modifier}-Alt-Up>",
-            lambda event: self._shortcut_nudge(event, velocity=5),
-        )
-        self.bind_all(
-            f"<{modifier}-Alt-Down>",
-            lambda event: self._shortcut_nudge(event, velocity=-5),
-        )
+        self.bind_all("<Escape>", self._shortcut_editor)
+
+    def _shortcut_editor(self, event):
+        if self._is_text_input(event):
+            return None
+        if isinstance(self.current_view, SequencerView):
+            return handle_editor_key(self.current_view, event)
+        # Keep SFX history accessible through the same system shortcuts.
+        if event.state & (0x0004 | (0x0008 if sys.platform == "darwin" else 0)):
+            key = event.keysym.lower()
+            if key == "z":
+                return self._shortcut_redo(event) if event.state & 1 else self._shortcut_undo(event)
+            if key == "y":
+                return self._shortcut_redo(event)
+        return None
+
+    def _shortcut_pause(self, event=None):
+        if event is not None and self._is_text_input(event):
+            return None
+        if self._playing or self._playback_loading:
+            self.stop_playback()
+            self.set_status("已暂停 · Ctrl/Cmd + Space 继续")
+        else:
+            self.toggle_playback()
+        return "break"
 
     @staticmethod
     def _is_text_input(event) -> bool:
@@ -711,6 +664,8 @@ class BlipkitApp(ctk.CTk):
         if self.current_view is not None and self.dirty:
             self._commit_current_editor()
         self.stop_playback()
+        self.note_auditioner.cancel()
+        self.audition_player.stop()
         self.current_mode = mode
         if mode in ("music", "sfx"):
             self.last_editor_mode = mode
@@ -721,6 +676,25 @@ class BlipkitApp(ctk.CTk):
                 text_color=T.TEXT if active else T.TEXT_SECONDARY,
                 font=ui_font(T.TEXT_14, "bold" if active else "normal"),
             )
+        if isinstance(self.current_view, SequencerView):
+            view = self.current_view
+            if view.gesture_active:
+                view.cancel_gesture()
+            self._shared_note_clipboard = view._note_clipboard
+            self._editor_sessions[view._session_key] = {
+                "undo": view._undo_stack,
+                "redo": view._redo_stack,
+                "track": view.selected_track_index,
+                "selection": set(view.selected_note_ids),
+                "primary": view.selected_note_id,
+                "cursor": view.insert_beat,
+                "view": view.view_var.get(),
+                "tool": view.tool_var.get(),
+                "snap": view.snap_var.get(),
+                "loop": view.loop_var.get(),
+                "cell": view.cell_w,
+                "arrangement_cell": view.arrangement_cell_w,
+            }
         if self.current_view is not None:
             self.current_view.destroy()
         if mode == "music":
@@ -763,6 +737,21 @@ class BlipkitApp(ctk.CTk):
                 self.set_status,
             )
         self.current_view.pack(fill="both", expand=True)
+        if isinstance(self.current_view, SequencerView):
+            view = self.current_view
+            view._session_key = (str(self.project.path), view.song.id)
+            view._note_clipboard = self._shared_note_clipboard
+            session = self._editor_sessions.get(view._session_key)
+            if session:
+                view._undo_stack, view._redo_stack = session["undo"], session["redo"]
+                view.select_track(session["track"])
+                view._set_selection(session["selection"], session["primary"])
+                view.insert_beat = session["cursor"]
+                view.tool_var.set(session["tool"])
+                view.snap_var.set(session["snap"])
+                view.loop_var.set(session["loop"])
+                view.cell_w, view.arrangement_cell_w = session["cell"], session["arrangement_cell"]
+                view.set_editor_view(session["view"])
         self.refresh_assets()
         self._update_status_meta()
         self._schedule_music_preview(40)
@@ -861,6 +850,7 @@ class BlipkitApp(ctk.CTk):
             self.current_sfx = self.current_view.patch
             self.project.save_sfx(self.current_sfx)
         elif isinstance(self.current_view, SequencerView):
+            self.current_view._apply_song_controls()
             self.current_song = self.current_view.song
             self.project.save_song(self.current_song)
         elif isinstance(self.current_view, SettingsView):
@@ -923,9 +913,7 @@ class BlipkitApp(ctk.CTk):
         ):
             return
         try:
-            plan = self.current_view.create_playback_plan(
-                self.project.metadata.sample_rate
-            )
+            plan = self.current_view.create_playback_plan(self.project.metadata.sample_rate)
         except Exception:
             return
         rendered = self._cached_music_preview(plan)
@@ -1039,6 +1027,17 @@ class BlipkitApp(ctk.CTk):
     def _poll_music_render_results(self) -> None:
         if self._closing:
             return
+        audition = self.note_auditioner.take_latest()
+        if audition is not None:
+            samples, sample_rate, error = audition
+            if error:
+                self.set_status(f"试听失败：{error}")
+            else:
+                try:
+                    self.audition_player.play(samples, sample_rate)
+                except Exception as exc:
+                    self.set_status(f"试听失败：{exc}")
+        self._poll_export_events()
         while True:
             try:
                 plan, samples, stems, error = self._music_render_results.get_nowait()
@@ -1068,10 +1067,7 @@ class BlipkitApp(ctk.CTk):
                         request_samples,
                     )
             mix_request = self._mix_update_request
-            if (
-                mix_request is not None
-                and mix_request[1].stem_cache_key == plan.stem_cache_key
-            ):
+            if mix_request is not None and mix_request[1].stem_cache_key == plan.stem_cache_key:
                 mix_id, mix_plan, mix_view = mix_request
                 self._mix_update_request = None
                 if error is not None:
@@ -1092,10 +1088,7 @@ class BlipkitApp(ctk.CTk):
                     )
 
         self._poll_prepared_mix_updates()
-        if (
-            self._music_render_active_key is None
-            and self._music_render_pending_plan is not None
-        ):
+        if self._music_render_active_key is None and self._music_render_pending_plan is not None:
             pending = self._music_render_pending_plan
             self._music_render_pending_plan = None
             if self._cached_music_stems(pending) is None:
@@ -1168,7 +1161,7 @@ class BlipkitApp(ctk.CTk):
         mix_id = self._mix_update_id
         elapsed = self.player.current_time()
         current_beat = min(
-            view.song.loop_end,
+            view.playback_end,
             view._playhead_start_beat + elapsed * view.song.bpm / 60.0,
         )
         view.insert_beat = current_beat
@@ -1197,15 +1190,11 @@ class BlipkitApp(ctk.CTk):
         rendered=None,
         stems: tuple[np.ndarray, ...] | None = None,
     ) -> None:
-        if (
-            mix_id != self._mix_update_id
-            or not self._playing
-            or self.current_view is not view
-        ):
+        if mix_id != self._mix_update_id or not self._playing or self.current_view is not view:
             return
         audio_time = self.player.current_time()
         current_beat = min(
-            view.song.loop_end,
+            view.playback_end,
             view._playhead_start_beat + audio_time * view.song.bpm / 60.0,
         )
         prepared_plan = replace(plan, start_beat=current_beat)
@@ -1242,9 +1231,7 @@ class BlipkitApp(ctk.CTk):
         except Exception as exc:
             samples = None
             error = exc
-        self._mix_update_results.put(
-            (mix_id, plan, view, samples, rendered, audio_time, error)
-        )
+        self._mix_update_results.put((mix_id, plan, view, samples, rendered, audio_time, error))
 
     def _poll_prepared_mix_updates(self) -> None:
         while True:
@@ -1260,11 +1247,7 @@ class BlipkitApp(ctk.CTk):
                 ) = self._mix_update_results.get_nowait()
             except queue.Empty:
                 return
-            if (
-                mix_id != self._mix_update_id
-                or not self._playing
-                or self.current_view is not view
-            ):
+            if mix_id != self._mix_update_id or not self._playing or self.current_view is not view:
                 continue
             if error is not None or samples is None:
                 self.set_status(f"混音更新失败：{error}")
@@ -1279,7 +1262,7 @@ class BlipkitApp(ctk.CTk):
             if lag_frames >= len(samples):
                 continue
             current_beat = min(
-                view.song.loop_end,
+                view.playback_end,
                 plan.start_beat + lag_seconds * view.song.bpm / 60.0,
             )
             self._commit_mix_update(
@@ -1320,11 +1303,15 @@ class BlipkitApp(ctk.CTk):
     def toggle_playback(self) -> None:
         if self._playing or self._playback_loading:
             self.stop_playback()
+            if isinstance(self.current_view, SequencerView):
+                self.current_view._set_edit_cursor(self._transport_origin, seek=False)
             return
         if not hasattr(self.current_view, "render_audio"):
             self.set_status("当前视图没有可预览的音频")
             return
         view = self.current_view
+        if isinstance(view, SequencerView):
+            self._transport_origin = view.insert_beat
         sample_rate = self.project.metadata.sample_rate
         self._playback_request_id += 1
         request_id = self._playback_request_id
@@ -1359,15 +1346,13 @@ class BlipkitApp(ctk.CTk):
             self._cancel_pending_playback(f"预览失败：{exc}")
 
     def preview_note(self, pitch: int, instrument: str, velocity: int = 100) -> None:
-        sample_rate = self.project.metadata.sample_rate
-        note = Note(pitch=pitch, start=0, duration=0.45, velocity=velocity)
-        samples = render_note(
-            note,
+        self.note_auditioner.request(
+            pitch,
+            instrument,
+            velocity,
             max(60, self.current_song.bpm),
-            get_instrument_preset(instrument),
-            sample_rate,
+            self.project.metadata.sample_rate,
         )
-        self.audition_player.play(samples, sample_rate)
 
     def import_midi(self) -> None:
         selected = filedialog.askopenfilename(
@@ -1376,6 +1361,8 @@ class BlipkitApp(ctk.CTk):
         )
         if not selected:
             return
+        if self.dirty:
+            self._commit_current_editor()
         try:
             song = import_song_midi(Path(selected))
             existing = {item.name for _, item in self.project.load_songs()}
@@ -1467,22 +1454,43 @@ class BlipkitApp(ctk.CTk):
                 self.set_status("请先设置有效的引擎输出路径")
                 return
             destination = Path(path)
-        self.set_status("正在导出音频…")
-        self.update_idletasks()
-        result = export_project(
-            self.project,
-            destination=destination,
-            engine=engine,
-            selected_ids=selected_ids,
-            progress=lambda current, total, name: self.set_status(
-                f"正在导出 {current}/{total} · {name}"
-            ),
-        )
-        self.refresh_assets()
-        if result.failed:
-            self.set_status(f"导出完成：{len(result.files)} 个文件，{len(result.failed)} 个失败")
-        else:
-            self.set_status(f"导出完成：{len(result.files)} 个文件")
+        if self._export_running:
+            self.set_status("已有导出正在进行")
+            return
+        snapshot = ExportSnapshot(self.project)
+        self._export_running = True
+        self.set_status("正在导出音频… 可继续编辑")
+
+        def export_worker():
+            try:
+                result = export_project(
+                    snapshot,
+                    destination=destination,
+                    engine=engine,
+                    selected_ids=selected_ids,
+                    progress=lambda current, total, name: self._export_events.put(
+                        ("progress", f"正在导出 {current}/{total} · {name}")
+                    ),
+                )
+                self._export_events.put(("done", (result, destination)))
+            except Exception as exc:
+                self._export_events.put(("error", str(exc)))
+
+        threading.Thread(target=export_worker, daemon=True, name="blipkit-export").start()
+
+    def _poll_export_events(self):
+        while not self._export_events.empty():
+            kind, payload = self._export_events.get()
+            if kind == "progress":
+                self.set_status(payload)
+            elif kind == "error":
+                self._export_running = False
+                self.set_status(f"导出失败：{payload}")
+            else:
+                self._export_running = False
+                result, destination = payload
+                suffix = f" · {len(result.failed)} 个失败" if result.failed else ""
+                self.set_status(f"已导出 {len(result.files)} 个文件{suffix} → {destination}")
 
     def new_project(self) -> None:
         parent = filedialog.askdirectory(
@@ -1534,7 +1542,8 @@ class BlipkitApp(ctk.CTk):
         self.show_view("music")
 
     def _autosave(self) -> None:
-        if self.dirty:
+        editing = isinstance(self.current_view, SequencerView) and self.current_view.gesture_active
+        if self.dirty and not editing:
             self.save_current()
             self.set_status("已自动保存")
         self.after(self.settings.autosave_seconds * 1000, self._autosave)
@@ -1554,7 +1563,13 @@ class BlipkitApp(ctk.CTk):
             self.status_var.set(message)
 
     def _close(self) -> None:
+        if self._export_running:
+            self.set_status("正在导出，完成后可关闭窗口")
+            return
+        if isinstance(self.current_view, SequencerView) and self.current_view.gesture_active:
+            self.current_view.cancel_gesture()
         self._closing = True
+        self.note_auditioner.close()
         try:
             for after_id in (
                 self._music_render_warm_after_id,

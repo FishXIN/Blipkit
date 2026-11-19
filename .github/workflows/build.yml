@@ -34,9 +34,11 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             .venv/Scripts/python -m pip install --upgrade pip
             .venv/Scripts/pip install -e ".[dev]"
+            .venv/Scripts/pip install --no-deps "tinysoundfont==0.3.7"
           else
             .venv/bin/python -m pip install --upgrade pip
             .venv/bin/pip install -e ".[dev]"
+            .venv/bin/pip install --no-deps "tinysoundfont==0.3.7"
           fi
 
       - name: Test
@@ -56,6 +58,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: .\build_windows.ps1
+
+      - name: Smoke test packaged app
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            .venv/Scripts/python scripts/smoke_packaged.py dist/windows/Blipkit/Blipkit.exe
+          else
+            .venv/bin/python scripts/smoke_packaged.py dist/Blipkit.app/Contents/MacOS/Blipkit
+          fi
 
       - name: Upload macOS artifact
         if: runner.os == 'macOS'

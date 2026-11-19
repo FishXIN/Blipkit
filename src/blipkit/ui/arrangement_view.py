@@ -12,6 +12,7 @@ import customtkinter as ctk
 from blipkit.core.models import Note, Song
 
 from . import tokens as T
+from .editor_shortcuts import alt, handle_editor_key
 
 FONT_UI = T.FONT_UI_MAC if sys.platform == "darwin" else T.FONT_UI_WIN
 FONT_MONO = T.FONT_MONO_MAC if sys.platform == "darwin" else T.FONT_MONO_WIN
@@ -33,6 +34,7 @@ class ArrangementView(ctk.CTkFrame):
         on_toggle_mute: Callable[[int], None],
         on_toggle_solo: Callable[[int], None],
         on_zoom: Callable[[int], None],
+        editor=None,
     ):
         super().__init__(
             parent,
@@ -48,6 +50,12 @@ class ArrangementView(ctk.CTkFrame):
         self.on_toggle_mute = on_toggle_mute
         self.on_toggle_solo = on_toggle_solo
         self.on_zoom = on_zoom
+        self.editor = editor
+        self.drag_active = False
+        self._edit_drag = None
+        self._marquee = None
+        self._scroll_after = None
+        self._last_event = None
         self.song: Song | None = None
         self.selected_track_index = 0
         self.insert_beat = 0.0
@@ -111,7 +119,7 @@ class ArrangementView(ctk.CTkFrame):
         self.timeline.bind("<Double-Button-1>", self._timeline_double_click)
         self.timeline.bind("<Motion>", self._timeline_motion)
         self.timeline.bind("<Leave>", self._timeline_leave)
-        self.timeline.bind("<space>", lambda _event: self._play())
+        self.timeline.bind("<KeyPress>", lambda event: handle_editor_key(editor, event))
         for widget in (self.headers, self.timeline, self.v_scroll):
             widget.bind("<MouseWheel>", self._vertical_wheel)
         self.timeline.bind("<Shift-MouseWheel>", self._horizontal_wheel)
@@ -269,7 +277,10 @@ class ArrangementView(ctk.CTkFrame):
                 max(x1 + 2, x2),
                 y + 6,
                 fill=color,
-                outline="",
+                outline=T.ACCENT
+                if self.editor and note.id in self.editor.selected_note_ids
+                else "",
+                width=2,
                 tags="arrange_note",
             )
             self._note_items[item] = (track_index, note)
@@ -290,9 +301,7 @@ class ArrangementView(ctk.CTkFrame):
             outline="",
             tags="arrange_ruler",
         )
-        bar_width = (
-            self.song.beats_per_bar * self.SUBDIVISIONS * self.cell_w
-        )
+        bar_width = self.song.beats_per_bar * self.SUBDIVISIONS * self.cell_w
         label_step = max(1, math.ceil(42 / max(1.0, bar_width)))
         for bar in range(0, self.song.bars + 1, label_step):
             x = bar * self.song.beats_per_bar * self.SUBDIVISIONS * self.cell_w
@@ -419,6 +428,7 @@ class ArrangementView(ctk.CTkFrame):
     def _timeline_click(self, event) -> None:
         if self.song is None:
             return
+        self.timeline.focus_set()
         if event.y < self.RULER_H:
             self._scrubbing = True
             self._seek_from_event(event)
@@ -426,9 +436,43 @@ class ArrangementView(ctk.CTkFrame):
         note = self._note_at(event)
         index = note[0] if note else self._track_index_at(event)
         if index is not None:
-            self.on_select_track(index)
+            if index != self.selected_track_index:
+                self.on_select_track(index)
+            if self.editor is None:
+                return
+            state = getattr(event, "state", 0)
+            if note:
+                value = note[1]
+                selected = set(self.editor.selected_note_ids)
+                if value.id not in selected:
+                    selected = selected | {value.id} if state & 1 else {value.id}
+                self.editor._set_selection(selected, value.id)
+                self.editor._redraw_arrangement()
+                self.editor._begin_gesture(event)
+                items = {
+                    n.id: (item, self.timeline.coords(item))
+                    for item, (_track, n) in self._note_items.items()
+                    if n.id in selected
+                }
+                self._edit_drag = {
+                    "origin": self.timeline.canvasx(event.x),
+                    "y": event.y,
+                    "source": index,
+                    "target": index,
+                    "note": value,
+                    "originals": {n.id: n.start for n in self.editor._selected_notes()},
+                    "items": items,
+                    "clone": bool(state & 1),
+                    "moved": False,
+                }
+            else:
+                if not state & 1:
+                    self.editor._clear_selection()
+                self._marquee = (self.timeline.canvasx(event.x), self.timeline.canvasy(event.y))
+            self.drag_active = True
 
     def _timeline_double_click(self, event) -> None:
+        self._timeline_release(event)
         note = self._note_at(event)
         index = note[0] if note else self._track_index_at(event)
         if index is not None:
@@ -437,9 +481,129 @@ class ArrangementView(ctk.CTkFrame):
     def _timeline_drag(self, event) -> None:
         if self._scrubbing:
             self._seek_from_event(event)
+            return
+        self._last_event = event
+        self._apply_drag(event)
+        if self.drag_active and self._scroll_after is None:
+            self._scroll_after = self.after(16, self._auto_scroll_drag)
+
+    def _apply_drag(self, event):
+        if self._marquee is not None:
+            self.timeline.delete("selection_box")
+            self.timeline.create_rectangle(
+                *self._marquee,
+                self.timeline.canvasx(event.x),
+                self.timeline.canvasy(event.y),
+                fill=T.ACCENT_SOFT,
+                stipple="gray25",
+                outline=T.ACCENT,
+                tags="selection_box",
+            )
+            return
+        drag = self._edit_drag
+        if drag is None:
+            return
+        dx = self.timeline.canvasx(event.x) - drag["origin"]
+        if abs(dx) < 3 and abs(event.y - drag["y"]) < 3 and not drag["moved"]:
+            return
+        editor = self.editor
+        if drag["clone"]:
+            copies, items = [], {}
+            for note in editor._selected_notes():
+                clone = Note(note.pitch, note.start, note.duration, note.velocity)
+                copies.append(clone)
+                _, coords = drag["items"][note.id]
+                item = self.timeline.create_rectangle(
+                    *coords, fill=editor.selected_track.color, outline=T.ACCENT, tags="arrange_note"
+                )
+                self._note_items[item] = (drag["source"], clone)
+                items[clone.id] = (item, coords)
+            editor.selected_track.notes.extend(copies)
+            editor._set_selection({n.id for n in copies}, copies[0].id)
+            drag["originals"] = {n.id: n.start for n in copies}
+            drag["items"] = items
+            drag["clone"] = False
+        notes = editor._selected_notes()
+        delta = dx / (self.SUBDIVISIONS * self.cell_w)
+        if not alt(event):
+            delta = editor._snap_beat(delta)
+        delta = max(
+            -min(drag["originals"].values()),
+            min(
+                delta,
+                self.song.total_beats - max(drag["originals"][n.id] + n.duration for n in notes),
+            ),
+        )
+        target = self._track_index_at(event)
+        drag["target"] = target if target is not None else drag["target"]
+        dy = (drag["target"] - drag["source"]) * self.ROW_H
+        for note in notes:
+            note.start = drag["originals"][note.id] + delta
+            item, (x1, y1, x2, y2) = drag["items"][note.id]
+            shift_x = delta * self.SUBDIVISIONS * self.cell_w
+            self.timeline.coords(item, x1 + shift_x, y1 + dy, x2 + shift_x, y2 + dy)
+        drag["moved"] = True
+
+    def _auto_scroll_drag(self):
+        self._scroll_after = None
+        if not self.drag_active or self._last_event is None:
+            return
+        event = self._last_event
+        dx = min(24, max(0, event.x - self.timeline.winfo_width() + 28)) - min(
+            24, max(0, 28 - event.x)
+        )
+        dy = min(20, max(0, event.y - self.timeline.winfo_height() + 28)) - min(
+            20, max(0, self.RULER_H + 28 - event.y)
+        )
+        if dx or dy:
+            self._scroll_pixels(horizontal=dx, vertical=dy)
+            self._apply_drag(event)
+        self._scroll_after = self.after(16, self._auto_scroll_drag)
 
     def _timeline_release(self, _event) -> None:
         self._scrubbing = False
+        if not self.drag_active:
+            return
+        editor = self.editor
+        drag = self._edit_drag
+        if drag and drag["moved"] and drag["target"] != drag["source"]:
+            notes = editor._selected_notes()
+            ids = {n.id for n in notes}
+            editor.selected_track.notes[:] = [
+                n for n in editor.selected_track.notes if n.id not in ids
+            ]
+            self.song.tracks[drag["target"]].notes.extend(notes)
+            editor.selected_track_index = drag["target"]
+            editor.instrument_var.set(editor.selected_track.instrument)
+        if self._marquee and _event is not None:
+            x1, x2 = sorted((self._marquee[0], self.timeline.canvasx(_event.x)))
+            y1, y2 = sorted((self._marquee[1], self.timeline.canvasy(_event.y)))
+            selected = set(editor.selected_note_ids)
+            if abs(x2 - x1) + abs(y2 - y1) >= 4:
+                for item, (index, note) in self._note_items.items():
+                    nx1, ny1, nx2, ny2 = self.timeline.coords(item)
+                    if (
+                        index == editor.selected_track_index
+                        and nx2 >= x1
+                        and nx1 <= x2
+                        and ny2 >= y1
+                        and ny1 <= y2
+                    ):
+                        selected.add(note.id)
+            editor._set_selection(selected)
+        editor._commit_gesture()
+        self.cancel_drag()
+        editor._rebuild_tracks()
+        editor.redraw()
+
+    def cancel_drag(self):
+        if self._scroll_after is not None:
+            self.after_cancel(self._scroll_after)
+        self._scroll_after = None
+        self._last_event = None
+        self.drag_active = False
+        self._edit_drag = self._marquee = None
+        self.timeline.delete("selection_box")
 
     def _seek_from_event(self, event) -> None:
         if self.song is None:
@@ -499,8 +663,12 @@ class ArrangementView(ctk.CTkFrame):
         return "break"
 
     def _zoom_wheel(self, event) -> str:
-        self.on_zoom(4 if event.delta > 0 else -4)
+        self.on_zoom(4 if event.delta > 0 else -4, anchor_x=event.x)
         return "break"
+
+    def destroy(self):
+        self.cancel_drag()
+        super().destroy()
 
     @staticmethod
     def _normalized_wheel_delta(event) -> float:

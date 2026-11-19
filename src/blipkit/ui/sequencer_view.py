@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import math
@@ -20,13 +19,14 @@ from blipkit.core.music_assistant import chord_to_midi, is_in_scale
 from blipkit.core.sequencer import (
     mix_song_stems,
     render_song_stems,
-    song_duration,
 )
 from blipkit.core.soundbank import BUILTIN_PRESETS
 
 from . import tokens as T
 from .arrangement_view import ArrangementView
+from .editor_shortcuts import handle_editor_key
 from .macos_gestures import MacMagnifyGesture
+from .piano_interaction import PianoInteraction
 from .widgets import LabeledSlider, action_button, icon_button, ui_font
 
 
@@ -79,9 +79,7 @@ class SequencerPlaybackPlan:
         first_beat = int(np.ceil(self.start_beat))
         accent_period = max(1, round(self.song.beats_per_bar))
         for beat in range(first_beat, int(np.ceil(self.song.loop_end))):
-            click_start = int(
-                (beat - self.start_beat) * seconds_per_beat * self.sample_rate
-            )
+            click_start = int((beat - self.start_beat) * seconds_per_beat * self.sample_rate)
             if click_start >= len(output):
                 break
             frequency = 1320.0 if beat % accent_period == 0 else 880.0
@@ -95,9 +93,9 @@ class SequencerPlaybackPlan:
         return np.tanh(output).astype(np.float32)
 
 
-class SequencerView(ctk.CTkFrame):
-    PITCH_LOW = 36
-    PITCH_HIGH = 84
+class SequencerView(PianoInteraction, ctk.CTkFrame):
+    PITCH_LOW = 0
+    PITCH_HIGH = 127
     ROW_H = 20
     CELL_W = 26
     SUBDIVISIONS = 4
@@ -107,6 +105,10 @@ class SequencerView(ctk.CTkFrame):
         "1/4": 1.0,
         "1/8": 0.5,
         "1/16": 0.25,
+        "1/32": 0.125,
+        "1/8T": 1 / 3,
+        "1/16T": 1 / 6,
+        "自由": 1 / 96,
     }
     SCALE_LABELS = {
         "Major": "大调",
@@ -160,7 +162,7 @@ class SequencerView(ctk.CTkFrame):
         self._zoom_finalize_after: str | None = None
         self._zoom_preview_view: str | None = None
         self.view_var = tk.StringVar(value="编排")
-        self.tool_var = tk.StringVar(value="选择")
+        self.tool_var = tk.StringVar(value="画笔")
         self.snap_var = tk.StringVar(value="1/16")
         self.preview_var = tk.BooleanVar(value=True)
         self.scale_warning_var = tk.BooleanVar(value=True)
@@ -196,10 +198,11 @@ class SequencerView(ctk.CTkFrame):
         self._playhead_duration = 0.0
         self._playhead_start_beat = 0.0
         self._playhead_clock: Callable[[], float] | None = None
-        self._undo_stack: list[tuple[list[Track], int, float]] = []
-        self._redo_stack: list[tuple[list[Track], int, float]] = []
+        self._undo_stack: list[tuple] = []
+        self._redo_stack: list[tuple] = []
         self._note_clipboard: list[tuple[int, float, float, int]] = []
 
+        self._init_interaction()
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
         self._build_toolbar()
@@ -220,7 +223,7 @@ class SequencerView(ctk.CTkFrame):
     def _build_toolbar(self) -> None:
         toolbar = ctk.CTkFrame(
             self,
-            height=158,
+            height=194,
             fg_color=T.SURFACE,
             corner_radius=0,
             border_width=0,
@@ -323,9 +326,7 @@ class SequencerView(ctk.CTkFrame):
         )
         key_menu.pack(side="left", padx=(6, 4))
 
-        self.scale_var = tk.StringVar(
-            value=self.SCALE_LABELS.get(self.song.scale, self.song.scale)
-        )
+        self.scale_var = tk.StringVar(value=self.SCALE_LABELS.get(self.song.scale, self.song.scale))
         scale = self._option(
             transport,
             self.scale_var,
@@ -346,10 +347,10 @@ class SequencerView(ctk.CTkFrame):
 
         ctk.CTkSegmentedButton(
             editor_bar,
-            values=["选择", "画笔"],
+            values=["画笔", "连画", "选择", "擦除", "切片", "试听"],
             variable=self.tool_var,
             command=self._tool_changed,
-            width=142,
+            width=264,
             height=30,
             corner_radius=T.RADIUS,
             fg_color=T.SURFACE,
@@ -446,29 +447,46 @@ class SequencerView(ctk.CTkFrame):
             font=ui_font(T.TEXT_12),
         ).pack(side="left", padx=(0, 8))
 
-        self._divider(editor_bar, height=24).pack(side="left", padx=(0, 8), pady=10)
-        self._inline_label(editor_bar, "音色")
+        instrument_bar = ctk.CTkFrame(toolbar, fg_color="transparent", height=32)
+        instrument_bar.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 8))
+        instrument_bar.grid_propagate(False)
+        self._inline_label(instrument_bar, "音色")
         self._option(
-            editor_bar,
+            instrument_bar,
             self.instrument_var,
             [preset.name for preset in BUILTIN_PRESETS],
             132,
             command=self._instrument_changed,
         ).pack(side="left", padx=(5, 6), pady=8)
         action_button(
-            editor_bar,
+            instrument_bar,
             "导入 MIDI",
             self.on_import_midi,
             width=70,
             quiet=True,
         ).pack(side="left", pady=7)
         action_button(
-            editor_bar,
+            instrument_bar,
             "导出 MIDI",
             self.on_export_midi,
             width=70,
             quiet=True,
         ).pack(side="left", padx=(0, 6), pady=7)
+
+        action_button(instrument_bar, "+ 轨道", self.add_track, width=62, quiet=True).pack(
+            side="left"
+        )
+        action_button(instrument_bar, "撤销", self.undo, width=54, quiet=True).pack(side="left")
+        action_button(instrument_bar, "重做", self.redo, width=54, quiet=True).pack(side="left")
+        action_button(instrument_bar, "循环选区", self.loop_selection, width=76, quiet=True).pack(
+            side="left"
+        )
+        action_button(instrument_bar, "整曲适配", self.fit_song, width=76, quiet=True).pack(
+            side="left"
+        )
+        action_button(
+            instrument_bar, "操作帮助 F1", self.show_shortcut_help, width=96, quiet=True
+        ).pack(side="right")
 
         self.chord_var = tk.StringVar(value="Cmaj")
         note_bar = ctk.CTkFrame(
@@ -671,7 +689,17 @@ class SequencerView(ctk.CTkFrame):
         )
         self.canvas.grid(row=0, column=0, sticky="nsew")
         self.y_scroll.grid(row=0, column=1, sticky="ns")
-        self.x_scroll.grid(row=1, column=0, sticky="ew")
+        self.velocity_canvas = tk.Canvas(
+            grid_shell, height=78, background=T.SURFACE_ALT, highlightthickness=0, bd=0
+        )
+        self._velocity_lane_items = {}
+        self.velocity_canvas.grid(row=1, column=0, sticky="ew")
+        self.velocity_canvas.bind("<Button-1>", self._velocity_press)
+        self.velocity_canvas.bind("<B1-Motion>", self._velocity_drag)
+        self.velocity_canvas.bind("<ButtonRelease-1>", self._canvas_release)
+        self.velocity_canvas.bind("<KeyPress>", lambda event: handle_editor_key(self, event))
+        self.velocity_canvas.bind("<Shift-MouseWheel>", self._horizontal_wheel)
+        self.x_scroll.grid(row=2, column=0, sticky="ew")
         self.canvas.bind("<Button-1>", self._canvas_click)
         self.canvas.bind("<B1-Motion>", self._canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self._canvas_release)
@@ -691,48 +719,16 @@ class SequencerView(ctk.CTkFrame):
         self.x_scroll.bind("<Shift-MouseWheel>", self._horizontal_wheel)
         self.y_scroll.bind("<MouseWheel>", self._vertical_wheel)
         self.y_scroll.bind("<Shift-MouseWheel>", self._horizontal_wheel)
-        self.canvas.bind("<space>", self._canvas_play)
-        self.canvas.bind("<Left>", lambda event: self._canvas_seek(event, steps=-1))
-        self.canvas.bind("<Right>", lambda event: self._canvas_seek(event, steps=1))
-        self.canvas.bind("<Up>", lambda event: self._canvas_jump(event, direction=-1))
-        self.canvas.bind("<Down>", lambda event: self._canvas_jump(event, direction=1))
-        self.canvas.bind("<KeyPress-q>", lambda event: self._canvas_trim(event, side="left"))
-        self.canvas.bind("<KeyPress-w>", lambda event: self._canvas_trim(event, side="right"))
-        self.canvas.bind("<KeyPress-e>", lambda event: self._canvas_move_track(event, offset=-1))
-        self.canvas.bind("<KeyPress-r>", lambda event: self._canvas_move_track(event, offset=1))
-        modifier = "Command" if sys.platform == "darwin" else "Control"
-        self.canvas.bind(
-            f"<{modifier}-Left>",
-            lambda event: self._canvas_nudge(event, beats=-1),
-        )
-        self.canvas.bind(
-            f"<{modifier}-Right>",
-            lambda event: self._canvas_nudge(event, beats=1),
-        )
-        self.canvas.bind(
-            f"<{modifier}-Up>",
-            lambda event: self._canvas_nudge(event, pitches=1),
-        )
-        self.canvas.bind(
-            f"<{modifier}-Down>",
-            lambda event: self._canvas_nudge(event, pitches=-1),
-        )
-        self.canvas.bind(
-            f"<{modifier}-Shift-Up>",
-            lambda event: self._canvas_nudge(event, pitches=12),
-        )
-        self.canvas.bind(
-            f"<{modifier}-Shift-Down>",
-            lambda event: self._canvas_nudge(event, pitches=-12),
-        )
-        self.canvas.bind(
-            f"<{modifier}-Alt-Up>",
-            lambda event: self._canvas_nudge(event, velocity=5),
-        )
-        self.canvas.bind(
-            f"<{modifier}-Alt-Down>",
-            lambda event: self._canvas_nudge(event, velocity=-5),
-        )
+        self.canvas.bind("<KeyPress>", lambda event: handle_editor_key(self, event))
+        right = 2 if sys.platform == "darwin" else 3
+        middle = 3 if sys.platform == "darwin" else 2
+        self.canvas.bind(f"<Button-{right}>", self._erase_press)
+        self.canvas.bind(f"<B{right}-Motion>", self._canvas_drag)
+        self.canvas.bind(f"<ButtonRelease-{right}>", self._canvas_release)
+        self.canvas.bind(f"<Button-{middle}>", self._pan_press)
+        self.canvas.bind(f"<B{middle}-Motion>", self._pan_drag)
+        self.canvas.bind(f"<ButtonRelease-{middle}>", self._canvas_release)
+        self.canvas.bind("<Alt-MouseWheel>", self._velocity_wheel)
         self.arrangement_view = ArrangementView(
             body,
             on_select_track=self.select_track,
@@ -742,6 +738,7 @@ class SequencerView(ctk.CTkFrame):
             on_toggle_mute=self.toggle_track_mute,
             on_toggle_solo=self.toggle_track_solo,
             on_zoom=self.zoom_horizontal,
+            editor=self,
         )
         self.arrangement_view.grid(
             row=0,
@@ -761,7 +758,7 @@ class SequencerView(ctk.CTkFrame):
             self.track_panel.grid_remove()
             self.piano_grid_shell.grid_remove()
             self.arrangement_view.grid()
-            self._set_note_controls_enabled(False)
+            self._sync_note_controls()
         else:
             self.arrangement_view.grid_remove()
             self.track_panel.grid()
@@ -784,6 +781,7 @@ class SequencerView(ctk.CTkFrame):
             self.canvas.xview_moveto(fraction)
             self.after(1, self._center_selected_track_pitch)
         status = "多轨编排视图" if value == "编排" else f"钢琴卷帘 · {self.selected_track.name}"
+        self._active_timeline_canvas().focus_set()
         self.on_status(status)
 
     def set_editor_view(self, value: str) -> None:
@@ -1015,6 +1013,7 @@ class SequencerView(ctk.CTkFrame):
         self._rebuild_tracks()
         self.redraw()
         self.on_change()
+        self.on_mix_change()
         self.on_status(f"已移动轨道 {track.name}")
 
     def _track_name_changed(self) -> None:
@@ -1044,15 +1043,15 @@ class SequencerView(ctk.CTkFrame):
         self.on_status(f"轨道音量 {self.selected_track.volume:.2f}")
 
     def _tool_changed(self, value: str) -> None:
-        if value == "画笔" and self.view_var.get() == "编排":
+        if value in ("画笔", "连画") and self.view_var.get() == "编排":
             self.set_editor_view("钢琴卷帘")
         self._update_canvas_cursor()
-        self._clear_selection()
         self.redraw()
-        self.on_status("画笔模式：拖拽空白处写入音符" if value == "画笔" else "选择模式")
+        self.canvas.focus_set()
+        self.on_status(f"{value}模式 · Ctrl/Cmd 框选 · Shift 拖拽复制 · Alt 自由移动")
 
     def set_tool(self, value: str) -> None:
-        if value not in ("选择", "画笔"):
+        if value not in ("选择", "画笔", "连画", "擦除", "切片", "试听"):
             return
         self.tool_var.set(value)
         self._tool_changed(value)
@@ -1083,6 +1082,8 @@ class SequencerView(ctk.CTkFrame):
         return self.SNAP_BEATS.get(self.snap_var.get(), 0.25)
 
     def _snap_beat(self, beat: float) -> float:
+        if self.snap_var.get() == "自由":
+            return beat
         size = self._snap_size()
         return round(beat / size) * size
 
@@ -1100,6 +1101,7 @@ class SequencerView(ctk.CTkFrame):
         self.on_status(f"轨道音色已切换为 {value}")
 
     def _apply_song_controls(self, _event=None) -> None:
+        before = self._snapshot_state()
         previous = (
             self.song.bpm,
             self.song.time_signature,
@@ -1113,11 +1115,7 @@ class SequencerView(ctk.CTkFrame):
             self.bpm_var.set(str(self.song.bpm))
         self.song.time_signature = self.signature_var.get()
         max_note_end = max(
-            (
-                note.start + note.duration
-                for track in self.song.tracks
-                for note in track.notes
-            ),
+            (note.start + note.duration for track in self.song.tracks for note in track.notes),
             default=0.0,
         )
         minimum_bars = max(
@@ -1132,14 +1130,12 @@ class SequencerView(ctk.CTkFrame):
         except ValueError:
             pass
         self.bars_var.set(str(self.song.bars))
-        self.song.loop_end = self.song.total_beats
+        if self.song.bars != previous[4] or self.song.time_signature != previous[1]:
+            self.song.loop_start = min(self.song.loop_start, self.song.total_beats - 1 / 96)
+            self.song.loop_end = self.song.total_beats
         self.song.key = self.key_var.get()
         self.song.scale = next(
-            (
-                name
-                for name, label in self.SCALE_LABELS.items()
-                if label == self.scale_var.get()
-            ),
+            (name for name, label in self.SCALE_LABELS.items() if label == self.scale_var.get()),
             self.scale_var.get(),
         )
         current = (
@@ -1150,6 +1146,9 @@ class SequencerView(ctk.CTkFrame):
             self.song.bars,
         )
         if current != previous:
+            self._undo_stack.append(before)
+            self._undo_stack = self._undo_stack[-60:]
+            self._redo_stack.clear()
             self.on_change()
             self.redraw()
             if current[:2] != previous[:2] or current[4] != previous[4]:
@@ -1160,25 +1159,41 @@ class SequencerView(ctk.CTkFrame):
                 f" {self.scale_var.get()}"
             )
 
-    def _snapshot_state(self) -> tuple[list[Track], int, float]:
-        return copy.deepcopy(self.song.tracks), self.selected_track_index, self.insert_beat
+    def _snapshot_state(self) -> tuple:
+        return (
+            self.song.to_dict(),
+            self.selected_track_index,
+            self.insert_beat,
+            set(self.selected_note_ids),
+            self.selected_note_id,
+            self.loop_var.get(),
+        )
 
     def _push_undo(self) -> None:
         self._undo_stack.append(self._snapshot_state())
         self._undo_stack = self._undo_stack[-60:]
         self._redo_stack.clear()
 
-    def _restore_state(self, state: tuple[list[Track], int, float]) -> None:
-        tracks, track_index, insert_beat = state
-        self.song.tracks = copy.deepcopy(tracks)
-        self.selected_track_index = min(track_index, len(self.song.tracks) - 1)
-        self.insert_beat = insert_beat
-        self._clear_selection()
+    def _restore_state(self, state: tuple, notify: bool = True) -> None:
+        data, index, beat, selection, primary_id, loop = state
+        restored = Song.from_dict(data)
+        self.song.__dict__.update(restored.__dict__)
+        self.selected_track_index = min(index, len(self.song.tracks) - 1)
+        self.insert_beat = beat
+        self.loop_var.set(loop)
+        self.bpm_var.set(str(self.song.bpm))
+        self.bars_var.set(str(self.song.bars))
+        self.signature_var.set(self.song.time_signature)
+        self.key_var.set(self.song.key)
+        self.scale_var.set(self.SCALE_LABELS.get(self.song.scale, self.song.scale))
+        self._set_selection(selection, primary_id)
         self.instrument_var.set(self.selected_track.instrument)
-        self.position_var.set(self._format_position(self.insert_beat))
+        self.position_var.set(self._format_position(beat))
         self._rebuild_tracks()
         self.redraw()
-        self.on_change()
+        if notify:
+            self.on_change()
+            self.on_mix_change()
 
     def undo(self) -> None:
         if not self._undo_stack:
@@ -1197,9 +1212,7 @@ class SequencerView(ctk.CTkFrame):
         self.on_status("已重做")
 
     def _selected_notes(self) -> list[Note]:
-        return [
-            note for note in self.selected_track.notes if note.id in self.selected_note_ids
-        ]
+        return [note for note in self.selected_track.notes if note.id in self.selected_note_ids]
 
     def _selected_note(self) -> Note | None:
         notes = self._selected_notes()
@@ -1273,9 +1286,7 @@ class SequencerView(ctk.CTkFrame):
             return
         if len(notes) == 1:
             note = notes[0]
-            self.note_summary_var.set(
-                f"{self._pitch_name(note.pitch)}{note.pitch // 12 - 1}"
-            )
+            self.note_summary_var.set(f"{self._pitch_name(note.pitch)}{note.pitch // 12 - 1}")
         else:
             self.note_summary_var.set(f"{len(notes)} 个音符")
         self.note_start_var.set(f"{min(note.start for note in notes):g}")
@@ -1283,7 +1294,7 @@ class SequencerView(ctk.CTkFrame):
         velocities = {note.velocity for note in notes}
         self.note_duration_var.set(f"{durations.pop():g}" if len(durations) == 1 else "")
         self.note_velocity_var.set(str(velocities.pop()) if len(velocities) == 1 else "")
-        self._set_note_controls_enabled(self.view_var.get() == "钢琴卷帘")
+        self._set_note_controls_enabled(True)
 
     def _apply_note_controls(self, _event=None) -> None:
         notes = self._selected_notes()
@@ -1299,11 +1310,7 @@ class SequencerView(ctk.CTkFrame):
                 if duration_text
                 else None
             )
-            velocity = (
-                max(1, min(127, int(velocity_text)))
-                if velocity_text
-                else None
-            )
+            velocity = max(1, min(127, int(velocity_text))) if velocity_text else None
         except ValueError:
             self._sync_note_controls()
             self.on_status("音符参数必须是数字")
@@ -1331,7 +1338,10 @@ class SequencerView(ctk.CTkFrame):
         self._sync_note_controls()
         self.redraw()
         self.on_change()
+        self.on_mix_change()
         self.on_status(f"已更新 {len(notes)} 个音符")
+        if _event is not None and getattr(_event, "keysym", "") == "Return":
+            self._active_timeline_canvas().focus_set()
 
     def quantize_selected(self) -> None:
         notes = self._selected_notes()
@@ -1347,8 +1357,7 @@ class SequencerView(ctk.CTkFrame):
             )
             updates.append((note, start, duration))
         if all(
-            (start, duration) == (note.start, note.duration)
-            for note, start, duration in updates
+            (start, duration) == (note.start, note.duration) for note, start, duration in updates
         ):
             self.on_status("所选音符已在当前网格上")
             return
@@ -1359,6 +1368,7 @@ class SequencerView(ctk.CTkFrame):
         self._sync_note_controls()
         self.redraw()
         self.on_change()
+        self.on_mix_change()
         self.on_status(f"已量化 {len(notes)} 个音符")
 
     def copy_selected_notes(self) -> bool:
@@ -1368,8 +1378,7 @@ class SequencerView(ctk.CTkFrame):
             return False
         origin = notes[0].start
         self._note_clipboard = [
-            (note.pitch, note.start - origin, note.duration, note.velocity)
-            for note in notes
+            (note.pitch, note.start - origin, note.duration, note.velocity) for note in notes
         ]
         self.on_status(f"已复制 {len(notes)} 个音符")
         return True
@@ -1387,6 +1396,7 @@ class SequencerView(ctk.CTkFrame):
         self._rebuild_tracks()
         self.redraw()
         self.on_change()
+        self.on_mix_change()
         self.on_status(f"已剪切 {len(notes)} 个音符")
 
     def paste_notes_at_playhead(self) -> None:
@@ -1394,13 +1404,13 @@ class SequencerView(ctk.CTkFrame):
             self.on_status("剪贴板中没有音符")
             return
         latest_end = max(
-            offset + duration
-            for _pitch, offset, duration, _velocity in self._note_clipboard
+            offset + duration for _pitch, offset, duration, _velocity in self._note_clipboard
         )
-        if self.insert_beat + latest_end > self.song.total_beats:
-            self.on_status("播放头右侧空间不足，无法粘贴")
+        if self.insert_beat + latest_end > 128 * self.song.beats_per_bar:
+            self.on_status("粘贴超出 128 小节上限")
             return
         self._push_undo()
+        self._grow_timeline(self.insert_beat + latest_end)
         pasted = [
             Note(
                 pitch=pitch,
@@ -1452,6 +1462,7 @@ class SequencerView(ctk.CTkFrame):
         self._rebuild_tracks()
         self.redraw()
         self.on_change()
+        self.on_mix_change()
         self.on_status(f"已在播放头处分割 {len(splittable)} 个音符")
 
     def trim_selected_to_playhead(self, side: str) -> None:
@@ -1507,6 +1518,15 @@ class SequencerView(ctk.CTkFrame):
         direction = "上一条" if offset < 0 else "下一条"
         self.on_status(f"已将 {len(notes)} 个音符移到{direction}轨道")
 
+    def _grow_timeline(self, end: float) -> None:
+        if end <= self.song.total_beats:
+            return
+        full_loop = abs(self.song.loop_end - self.song.total_beats) < 1e-6
+        self.song.bars = min(128, math.ceil(end / self.song.beats_per_bar))
+        self.bars_var.set(str(self.song.bars))
+        if full_loop:
+            self.song.loop_end = self.song.total_beats
+
     def duplicate_selected_note(self) -> None:
         notes = self._selected_notes()
         if not notes:
@@ -1514,11 +1534,12 @@ class SequencerView(ctk.CTkFrame):
             return
         earliest = min(note.start for note in notes)
         latest = max(note.start + note.duration for note in notes)
-        offset = max(self._snap_size(), self._snap_beat(latest - earliest))
-        if latest + offset > self.song.total_beats:
-            self.on_status("右侧空间不足，无法复制")
+        offset = math.ceil((latest - earliest) / self._snap_size() - 1e-8) * self._snap_size()
+        if latest + offset > 128 * self.song.beats_per_bar:
+            self.on_status("重复超出 128 小节上限")
             return
         self._push_undo()
+        self._grow_timeline(latest + offset)
         duplicates = [
             Note(
                 pitch=note.pitch,
@@ -1560,7 +1581,7 @@ class SequencerView(ctk.CTkFrame):
         updates = []
         for note in notes:
             duration = max(
-                self._snap_size(),
+                1 / 96,
                 min(note.duration + durations, self.song.total_beats - note.start - beats),
             )
             note_velocity = max(1, min(127, note.velocity + velocity))
@@ -1588,6 +1609,7 @@ class SequencerView(ctk.CTkFrame):
         self._sync_note_controls()
         self.redraw()
         self.on_change()
+        self.on_mix_change()
         self.on_status(f"已调整 {len(notes)} 个音符")
 
     def move_playhead(self, steps: int) -> None:
@@ -1659,6 +1681,7 @@ class SequencerView(ctk.CTkFrame):
         self._rebuild_tracks()
         self.redraw()
         self.on_change()
+        self.on_mix_change()
         self.on_status(f"已删除轨道 {removed.name}")
 
     def _reset_delete_track(self) -> None:
@@ -1708,8 +1731,9 @@ class SequencerView(ctk.CTkFrame):
     def _update_note_canvas_item(self, note: Note) -> None:
         item = self._note_rect_items.get(note.id)
         if item is None:
-            self.redraw()
-            return
+            item = self.canvas.create_rectangle(*self._note_rectangle(note), tags="timeline_zoom")
+            self._note_rect_items[note.id] = item
+            self._note_items[item] = note
         x1, y1, x2, y2 = self._note_rectangle(note)
         self.canvas.coords(item, x1, y1, x2, y2)
         selected = note.id in self.selected_note_ids
@@ -1776,15 +1800,15 @@ class SequencerView(ctk.CTkFrame):
             self._note_items.pop(handle_item, None)
             self._note_handle_items.pop(note.id, None)
 
+        self._update_velocity_item(note)
+
     @staticmethod
     def _event_additive(event) -> bool:
         state = int(getattr(event, "state", 0) or 0)
-        return bool(state & (0x0001 | 0x0004 | 0x0008 | 0x0010 | 0x100000))
+        return bool(state & 0x0001)
 
     def _note_edge_at_event(self, event, note: Note) -> bool:
-        x = self.canvas.canvasx(event.x)
-        _x1, x2 = self._note_bounds(note)
-        return abs(x - x2) <= 7
+        return self._note_edge(event, note) != "move"
 
     def _playhead_x(self) -> float:
         return self.LABEL_W + self.insert_beat * self.SUBDIVISIONS * self.cell_w
@@ -1897,96 +1921,6 @@ class SequencerView(ctk.CTkFrame):
         if self.preview_var.get():
             self.on_preview(note.pitch, self.selected_track.instrument, note.velocity)
 
-    def _canvas_click(self, event) -> None:
-        x = self.canvas.canvasx(event.x)
-        y = self.canvas.canvasy(event.y)
-        additive = self._event_additive(event)
-        self._marquee_start = None
-        self._marquee_current = None
-        if self._marquee_item is not None:
-            self.canvas.delete(self._marquee_item)
-            self._marquee_item = None
-        if x < self.canvas.canvasx(0) + self.LABEL_W:
-            if event.y >= self.RULER_H:
-                _beat, pitch = self._canvas_position(event)
-                if self.PITCH_LOW <= pitch <= self.PITCH_HIGH:
-                    self.on_seek()
-                    self.on_preview(pitch, self.selected_track.instrument, 96)
-            return
-        if self._playhead_at_event(event):
-            raw_beat, _pitch = self._canvas_position(event, snap=False)
-            if raw_beat > self.song.total_beats:
-                return
-            self._scrubbing_playhead = True
-            self._hover_beat = None
-            self.canvas.delete("hover_preview")
-            self.on_seek()
-            self._set_edit_cursor(
-                raw_beat,
-                clear_selection=False,
-                seek=False,
-                announce=False,
-            )
-            return
-        beat, pitch = self._canvas_position(event)
-        if beat < 0 or beat >= self.song.total_beats:
-            return
-        existing = self._note_at_event(event)
-        if existing:
-            if additive:
-                selected = set(self.selected_note_ids)
-                if existing.id in selected:
-                    selected.remove(existing.id)
-                else:
-                    selected.add(existing.id)
-                self._set_selection(selected, existing.id)
-                self.redraw()
-                if existing.id not in selected:
-                    self.on_status(f"已选择 {len(selected)} 个音符")
-                    return
-            elif existing.id not in self.selected_note_ids:
-                self._set_selection({existing.id}, existing.id)
-            else:
-                self._set_selection(set(self.selected_note_ids), existing.id)
-            self._drag_note = existing
-            self._drag_mode = "resize" if self._note_edge_at_event(event, existing) else "move"
-            self._drag_changed = False
-            raw_beat, _raw_pitch = self._canvas_position(event, snap=False)
-            self._drag_offset_beat = raw_beat - existing.start
-            self._drag_offset_pitch = pitch - existing.pitch
-            self._drag_originals = {
-                note.id: (note.start, note.pitch, note.duration)
-                for note in self._selected_notes()
-            }
-            self._history_pushed = False
-            self.redraw()
-            self._preview_note(existing)
-            return
-        self._drag_note = None
-        if pitch < self.PITCH_LOW or pitch > self.PITCH_HIGH:
-            return
-        if self.tool_var.get() == "画笔":
-            self._push_undo()
-            self._history_pushed = True
-            self._drawing_note = self._create_note(
-                beat,
-                pitch,
-                duration=self._snap_size(),
-            )
-            self._set_selection(
-                {self._drawing_note.id},
-                self._drawing_note.id,
-            )
-            self.redraw()
-            self._preview_note(self._drawing_note)
-            return
-        if not additive:
-            self._clear_selection()
-            self.redraw()
-        self._marquee_start = (x, y)
-        self._marquee_current = (x, y)
-        self._marquee_additive = additive
-
     def _set_edit_cursor(
         self,
         beat: float,
@@ -2019,217 +1953,6 @@ class SequencerView(ctk.CTkFrame):
         self.selected_track.notes.append(note)
         return note
 
-    def _canvas_drag(self, event) -> None:
-        if self._scrubbing_playhead:
-            raw_beat, _pitch = self._canvas_position(event, snap=False)
-            self._set_edit_cursor(
-                raw_beat,
-                clear_selection=False,
-                seek=False,
-                announce=False,
-            )
-            return
-        if self._drawing_note is not None:
-            beat, _pitch = self._canvas_position(event)
-            max_end = self.song.total_beats
-            end = max(
-                self._drawing_note.start + self._snap_size(),
-                min(max_end, beat + self._snap_size()),
-            )
-            duration = end - self._drawing_note.start
-            if abs(duration - self._drawing_note.duration) < 0.0001:
-                return
-            self._drawing_note.duration = duration
-            self._sync_note_controls()
-            self._update_note_canvas_item(self._drawing_note)
-            return
-        if self._marquee_start is not None:
-            x = self.canvas.canvasx(event.x)
-            y = self.canvas.canvasy(event.y)
-            timeline_right = (
-                self.LABEL_W
-                + self.song.total_beats * self.SUBDIVISIONS * self.cell_w
-            )
-            x = max(self.LABEL_W, min(timeline_right, x))
-            y = max(self.RULER_H, min(self._timeline_height(), y))
-            self._marquee_current = (x, y)
-            x1, y1 = self._marquee_start
-            if abs(x - x1) + abs(y - y1) < 5:
-                return
-            if self._marquee_item is None:
-                self._marquee_item = self.canvas.create_rectangle(
-                    x1,
-                    y1,
-                    x,
-                    y,
-                    fill=T.ACCENT_SOFT,
-                    outline=T.ACCENT,
-                    width=1,
-                    stipple="gray25",
-                    tags="marquee",
-                )
-                note_items = tuple(self._note_rect_items.values())
-                if note_items:
-                    self.canvas.tag_lower(
-                        self._marquee_item,
-                        note_items[0],
-                    )
-            else:
-                self.canvas.coords(self._marquee_item, x1, y1, x, y)
-            return
-        if self._drag_note is None:
-            return
-        raw_beat, pitch = self._canvas_position(event, snap=False)
-        originals = self._drag_originals
-        if self._drag_mode == "resize":
-            end = self._snap_beat(raw_beat)
-            primary_start, _primary_pitch, primary_duration = originals[self._drag_note.id]
-            duration = max(
-                self._snap_size(),
-                min(self.song.total_beats, end) - primary_start,
-            )
-            duration_delta = duration - primary_duration
-            updates = []
-            for note in self._selected_notes():
-                start, note_pitch, note_duration = originals[note.id]
-                updated_duration = max(
-                    self._snap_size(),
-                    min(note_duration + duration_delta, self.song.total_beats - start),
-                )
-                updates.append((note, start, note_pitch, updated_duration))
-            if all(note.duration == updated for note, _start, _pitch, updated in updates):
-                return
-            if not self._history_pushed:
-                self._push_undo()
-                self._history_pushed = True
-            for note, start, note_pitch, updated_duration in updates:
-                note.start = start
-                note.pitch = note_pitch
-                note.duration = updated_duration
-            self._drag_changed = True
-            self._sync_note_controls()
-            self.redraw()
-            return
-        primary_start, primary_pitch, _primary_duration = originals[self._drag_note.id]
-        target_start = self._snap_beat(raw_beat - self._drag_offset_beat)
-        target_pitch = pitch - self._drag_offset_pitch
-        beat_delta = target_start - primary_start
-        pitch_delta = target_pitch - primary_pitch
-        earliest = min(start for start, _pitch, _duration in originals.values())
-        latest = max(
-            start + duration for start, _pitch, duration in originals.values()
-        )
-        lowest = min(note_pitch for _start, note_pitch, _duration in originals.values())
-        highest = max(note_pitch for _start, note_pitch, _duration in originals.values())
-        beat_delta = max(
-            -earliest,
-            min(beat_delta, self.song.total_beats - latest),
-        )
-        pitch_delta = max(
-            self.PITCH_LOW - lowest,
-            min(pitch_delta, self.PITCH_HIGH - highest),
-        )
-        if beat_delta == 0 and pitch_delta == 0:
-            return
-        if not self._history_pushed:
-            self._push_undo()
-            self._history_pushed = True
-        for note in self._selected_notes():
-            start, note_pitch, duration = originals[note.id]
-            note.start = start + beat_delta
-            note.pitch = note_pitch + pitch_delta
-            note.duration = duration
-        self._drag_changed = True
-        self._sync_note_controls()
-        self.redraw()
-        if pitch_delta:
-            self._preview_note(self._drag_note)
-
-    def _canvas_release(self, _event) -> None:
-        if self._scrubbing_playhead:
-            self._scrubbing_playhead = False
-            self.on_status(f"播放位置 {self._format_position(self.insert_beat)}")
-            return
-        if self._drawing_note is not None:
-            note = self._drawing_note
-            self._drawing_note = None
-            self._rebuild_tracks()
-            self._sync_note_controls()
-            self.redraw()
-            self.on_change()
-            self.on_mix_change()
-            self.on_status(
-                f"已写入 {self._pitch_name(note.pitch)}{note.pitch // 12 - 1}"
-                f" · {note.duration:g} 拍"
-            )
-        if self._marquee_start is not None:
-            start = self._marquee_start
-            current = self._marquee_current or start
-            moved = abs(current[0] - start[0]) + abs(current[1] - start[1]) >= 5
-            self._marquee_start = None
-            self._marquee_current = None
-            if self._marquee_item is not None:
-                self.canvas.delete(self._marquee_item)
-                self._marquee_item = None
-            if moved:
-                x1, x2 = sorted((start[0], current[0]))
-                y1, y2 = sorted((start[1], current[1]))
-                selected = set(self.selected_note_ids) if self._marquee_additive else set()
-                for note in self.selected_track.notes:
-                    nx1, ny1, nx2, ny2 = self._note_rectangle(note)
-                    if nx2 >= x1 and nx1 <= x2 and ny2 >= y1 and ny1 <= y2:
-                        selected.add(note.id)
-                self._set_selection(selected)
-                self.redraw()
-                self.on_status(f"已选择 {len(selected)} 个音符")
-            return
-        if self._drag_note is not None and self._drag_changed:
-            self.on_change()
-            count = len(self.selected_note_ids)
-            if self._drag_mode == "resize":
-                self.on_status(f"已调整 {count} 个音符的时长")
-            else:
-                self.on_status(f"已移动 {count} 个音符")
-        self._drag_note = None
-        self._drag_originals = {}
-        self._drag_changed = False
-        self._history_pushed = False
-        self._update_canvas_cursor()
-
-    def _canvas_double_click(self, event) -> None:
-        self._drag_note = None
-        if self._note_at_event(event) is not None:
-            return
-        x = self.canvas.canvasx(event.x)
-        if x < self.canvas.canvasx(0) + self.LABEL_W or event.y < self.RULER_H:
-            return
-        beat, pitch = self._canvas_position(event)
-        if not (0 <= beat < self.song.total_beats):
-            return
-        if not (self.PITCH_LOW <= pitch <= self.PITCH_HIGH):
-            return
-        self.on_seek()
-        self._push_undo()
-        note = self._create_note(beat, pitch)
-        self._set_selection({note.id}, note.id)
-        self._rebuild_tracks()
-        self.redraw()
-        self.on_change()
-        self._preview_note(note)
-        self.on_status(f"已写入 {self._pitch_name(note.pitch)}{note.pitch // 12 - 1}")
-
-    def _canvas_delete(self, event) -> None:
-        self._drag_note = None
-        note = self._note_at_event(event)
-        if note is None:
-            return
-        note_ids = (
-            set(self.selected_note_ids)
-            if note.id in self.selected_note_ids
-            else {note.id}
-        )
-        self._remove_notes(note_ids)
-
     def _remove_notes(self, note_ids: set[str]) -> None:
         if not note_ids:
             return
@@ -2241,6 +1964,7 @@ class SequencerView(ctk.CTkFrame):
         self._rebuild_tracks()
         self.redraw()
         self.on_change()
+        self.on_mix_change()
         self.on_status(f"已删除 {len(note_ids)} 个音符")
 
     def delete_selected_note(self) -> None:
@@ -2268,6 +1992,7 @@ class SequencerView(ctk.CTkFrame):
         self._rebuild_tracks()
         self.redraw()
         self.on_change()
+        self.on_mix_change()
         self.on_status(f"已插入和弦 {self.chord_var.get()}")
 
     @staticmethod
@@ -2397,6 +2122,7 @@ class SequencerView(ctk.CTkFrame):
         self._draw_timeline_overlay()
         self._draw_edit_cursor(height)
         self._draw_piano_overlay()
+        self._redraw_velocity_lane()
         self.after_idle(self._refresh_canvas_overlays)
 
     def _redraw_arrangement(self) -> None:
@@ -2423,18 +2149,22 @@ class SequencerView(ctk.CTkFrame):
             outline="",
             tags="ruler_overlay",
         )
-        bar_width = (
-            self.song.beats_per_bar * self.cell_w * self.SUBDIVISIONS
-        )
+        if self.loop_var.get():
+            x1 = self.LABEL_W + self.song.loop_start * self.SUBDIVISIONS * self.cell_w
+            x2 = self.LABEL_W + self.song.loop_end * self.SUBDIVISIONS * self.cell_w
+            canvas.create_rectangle(
+                x1,
+                top + self.RULER_H - 5,
+                x2,
+                top + self.RULER_H,
+                fill=T.ACCENT,
+                outline="",
+                tags="ruler_overlay",
+            )
+        bar_width = self.song.beats_per_bar * self.cell_w * self.SUBDIVISIONS
         label_step = max(1, math.ceil(42 / max(1.0, bar_width)))
         for bar in range(0, self.song.bars + 1, label_step):
-            x = (
-                self.LABEL_W
-                + bar
-                * self.song.beats_per_bar
-                * self.cell_w
-                * self.SUBDIVISIONS
-            )
+            x = self.LABEL_W + bar * self.song.beats_per_bar * self.cell_w * self.SUBDIVISIONS
             if left + self.LABEL_W <= x <= right:
                 canvas.create_text(
                     x + 5,
@@ -2535,6 +2265,7 @@ class SequencerView(ctk.CTkFrame):
         self._yview("moveto", target / max(1.0, total))
 
     def _refresh_canvas_overlays(self) -> None:
+        self._redraw_velocity_lane()
         self._draw_timeline_overlay()
         self.canvas.delete("edit_cursor")
         self._draw_edit_cursor(self._timeline_height())
@@ -2546,7 +2277,7 @@ class SequencerView(ctk.CTkFrame):
         return "break"
 
     def _zoom_wheel(self, event) -> str:
-        self.zoom_horizontal(4 if event.delta > 0 else -4)
+        self.zoom_horizontal(4 if event.delta > 0 else -4, anchor_x=event.x)
         return "break"
 
     def _active_timeline_canvas(self) -> tk.Canvas:
@@ -2572,10 +2303,7 @@ class SequencerView(ctk.CTkFrame):
     ) -> None:
         if not magnification:
             return
-        if (
-            self._pinch_zoom_accumulator
-            and self._pinch_zoom_accumulator * magnification < 0
-        ):
+        if self._pinch_zoom_accumulator and self._pinch_zoom_accumulator * magnification < 0:
             self._pinch_zoom_accumulator = 0.0
         self._pinch_zoom_accumulator += magnification
         if abs(self._pinch_zoom_accumulator) < 0.002:
@@ -2712,14 +2440,21 @@ class SequencerView(ctk.CTkFrame):
             offset = max(0.0, min(offset, max(0.0, total - viewport)))
             self._yview("moveto", offset / max(1.0, total))
 
+    @property
+    def playback_end(self) -> float:
+        return self.song.loop_end if self.loop_var.get() else self.song.total_beats
+
     def _playback_start(self) -> float:
-        if self.insert_beat >= self.song.loop_end:
-            return self.song.loop_start
-        return max(self.song.loop_start, self.insert_beat)
+        start = self.song.loop_start if self.loop_var.get() else 0.0
+        if self.insert_beat >= self.playback_end:
+            return start
+        return max(start, self.insert_beat)
 
     def create_playback_plan(self, sample_rate: int = 44100) -> SequencerPlaybackPlan:
         self._apply_song_controls()
         song = Song.from_dict(self.song.to_dict())
+        if not self.loop_var.get():
+            song.loop_start, song.loop_end = 0.0, song.total_beats
         serialized = json.dumps(
             song.to_dict(),
             ensure_ascii=False,
@@ -2760,9 +2495,7 @@ class SequencerView(ctk.CTkFrame):
         self.redraw()
 
     def duration(self) -> float:
-        full_loop = song_duration(self.song, loop_only=True)
-        elapsed = (self._playback_start() - self.song.loop_start) * 60.0 / self.song.bpm
-        return max(0.05, full_loop - elapsed)
+        return max(0.05, (self.playback_end - self._playback_start()) * 60.0 / self.song.bpm)
 
     def start_playhead(self, clock: Callable[[], float] | None = None) -> None:
         self.stop_playhead()
@@ -2781,10 +2514,10 @@ class SequencerView(ctk.CTkFrame):
         )
         ratio = min(1.0, elapsed / self._playhead_duration)
         start_x = self.LABEL_W + self._playhead_start_beat * self.SUBDIVISIONS * self.cell_w
-        end_x = self.LABEL_W + self.song.loop_end * self.SUBDIVISIONS * self.cell_w
+        end_x = self.LABEL_W + self.playback_end * self.SUBDIVISIONS * self.cell_w
         x = start_x + (end_x - start_x) * ratio
         self.insert_beat = (
-            self._playhead_start_beat + (self.song.loop_end - self._playhead_start_beat) * ratio
+            self._playhead_start_beat + (self.playback_end - self._playhead_start_beat) * ratio
         )
         self.position_var.set(self._format_position(self.insert_beat))
         if self.view_var.get() == "编排":
@@ -2808,10 +2541,7 @@ class SequencerView(ctk.CTkFrame):
         left = self.canvas.canvasx(0)
         right = self.canvas.canvasx(self.canvas.winfo_width())
         if x > right - 40 or x < left:
-            total_width = (
-                self.LABEL_W
-                + self.song.total_beats * self.SUBDIVISIONS * self.cell_w
-            )
+            total_width = self.LABEL_W + self.song.total_beats * self.SUBDIVISIONS * self.cell_w
             target = (x - self.canvas.winfo_width() * 0.25) / max(1, total_width)
             self.canvas.xview_moveto(max(0.0, min(1.0, target)))
             self._refresh_canvas_overlays()
@@ -2839,6 +2569,8 @@ class SequencerView(ctk.CTkFrame):
             self.redraw()
 
     def destroy(self) -> None:
+        self._reset_pointer()
+        self._magnify_gesture.close()
         self._cancel_zoom_finalize()
         self.stop_playhead()
         self._reset_delete_track()
