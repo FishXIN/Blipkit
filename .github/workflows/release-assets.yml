@@ -1,0 +1,69 @@
+name: Attach verified desktop build to draft release
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful desktop build run ID
+        required: true
+        type: string
+      artifact_name:
+        description: Desktop artifact
+        required: true
+        type: choice
+        options: [Blipkit-Windows, Blipkit-macOS]
+      release_tag:
+        description: Existing draft release tag
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  attach:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Download built artifact
+        uses: actions/download-artifact@v7
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.run_id }}
+          name: ${{ inputs.artifact_name }}
+          path: release
+
+      - name: Verify package checksum and ZIP integrity
+        run: |
+          python - <<'PY'
+          import hashlib
+          import zipfile
+          from pathlib import Path
+
+          root = Path('release')
+          archives = set(root.glob('Blipkit-*.zip'))
+          verified = set()
+          for checksum in root.glob('checksums*.txt'):
+              for line in checksum.read_text().splitlines():
+                  digest, name = line.split(maxsplit=1)
+                  archive = root / Path(name.strip()).name
+                  assert archive in archives, f'Unexpected archive: {archive}'
+                  assert hashlib.sha256(archive.read_bytes()).hexdigest() == digest
+                  with zipfile.ZipFile(archive) as package:
+                      assert package.testzip() is None
+                      assert any(name.endswith(('Blipkit.exe', 'Contents/MacOS/Blipkit'))
+                                 for name in package.namelist()), 'App executable missing'
+                  verified.add(archive)
+                  print(f'{digest}  {archive.name}')
+          assert archives and archives == verified, 'Missing package checksum'
+          PY
+
+      - name: Attach to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          gh release upload "$RELEASE_TAG" release/Blipkit-*.zip
