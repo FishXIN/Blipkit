@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gc
 import sys
+import threading
 import tkinter as tk
 
 import pytest
@@ -65,6 +67,32 @@ def test_native_platform_shortcuts_remain_bound(shortcut_app) -> None:
     assert app.bind_all(f"<{modifier}-Shift-Z>")
     assert app.bind_all(f"<{modifier}-y>")
     assert app.bind_all("<Escape>")
+
+
+def test_ui_cycles_are_collected_on_ui_thread(shortcut_app):
+    # A cycle created by the UI may otherwise be finalized by the next worker
+    # allocation, deadlocking Tcl finalizers and the sampled-instrument lock.
+    finalized_on = []
+
+    class Cycle:
+        def __init__(self):
+            self.cycle = self
+
+        def __del__(self):
+            finalized_on.append(threading.get_ident())
+
+    Cycle()
+    assert not gc.isenabled()
+    worker = threading.Thread(target=lambda: [Cycle() for _ in range(2000)])
+    worker.start()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert not finalized_on
+    shortcut_app.after_cancel(shortcut_app._garbage_after_id)
+    shortcut_app._garbage_ticks = 59
+    shortcut_app._collect_ui_garbage()
+    assert len(finalized_on) == 2001
+    assert set(finalized_on) == {threading.get_ident()}
 
 
 def test_entry_typing_does_not_edit_or_play_music(shortcut_app, monkeypatch):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import queue
 import sys
 import threading
@@ -36,6 +37,11 @@ from .widgets import action_button, icon_button, ui_font
 
 class BlipkitApp(ctk.CTk):
     def __init__(self) -> None:
+        # Automatic cyclic GC can run inside an audio worker while it holds the
+        # synth lock. Tk font/variable finalizers then wait for the UI thread,
+        # which may itself be waiting for that lock. Only the UI collects cycles
+        # once Tk is in use; keep this policy through shutdown while workers exit.
+        gc.disable()
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
         super().__init__(fg_color=T.BG)
@@ -74,6 +80,8 @@ class BlipkitApp(ctk.CTk):
         self._mix_update_request = None
         self._mix_update_results = queue.SimpleQueue()
         self._closing = False
+        self._garbage_ticks = 0
+        self._garbage_after_id = self.after(1000, self._collect_ui_garbage)
         self._editor_sessions = {}
         self._shared_note_clipboard = []
         self._transport_origin = 0.0
@@ -105,6 +113,17 @@ class BlipkitApp(ctk.CTk):
             daemon=True,
         ).start()
         self.after(self.settings.autosave_seconds * 1000, self._autosave)
+
+    def _collect_ui_garbage(self) -> None:
+        if self._closing:
+            return
+        if not getattr(self.current_view, "gesture_active", False):
+            self._garbage_ticks += 1
+            generation = 2 if self._garbage_ticks % 60 == 0 else (
+                1 if self._garbage_ticks % 10 == 0 else 0
+            )
+            gc.collect(generation)
+        self._garbage_after_id = self.after(1000, self._collect_ui_garbage)
 
     def _apply_window_icon(self) -> None:
         base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
@@ -973,12 +992,12 @@ class BlipkitApp(ctk.CTk):
             return None
         return self._remember_music_preview(plan.cache_key, samples)
 
+    @staticmethod
     def _write_music_preview_cache(
-        self,
         plan: SequencerPlaybackPlan,
         samples,
     ) -> None:
-        path = self._music_preview_cache_path(plan)
+        path = BlipkitApp._music_preview_cache_path(plan)
         path.parent.mkdir(parents=True, exist_ok=True)
         temp = path.with_suffix(".tmp")
         try:
@@ -1007,22 +1026,23 @@ class BlipkitApp(ctk.CTk):
             return
         self._music_render_active_key = plan.stem_cache_key
         threading.Thread(
-            target=self._render_music_plan,
-            args=(plan,),
+            target=BlipkitApp._render_music_plan,
+            args=(plan, self._music_render_results),
             name="blipkit-preview-render",
             daemon=True,
         ).start()
 
-    def _render_music_plan(self, plan: SequencerPlaybackPlan) -> None:
+    @staticmethod
+    def _render_music_plan(plan: SequencerPlaybackPlan, results: queue.SimpleQueue) -> None:
         try:
             samples, stems = plan.render_bundle()
-            self._write_music_preview_cache(plan, samples)
+            BlipkitApp._write_music_preview_cache(plan, samples)
             error = None
         except Exception as exc:
             samples = None
             stems = None
             error = exc
-        self._music_render_results.put((plan, samples, stems, error))
+        results.put((plan, samples, stems, error))
 
     def _poll_music_render_results(self) -> None:
         if self._closing:
@@ -1199,11 +1219,12 @@ class BlipkitApp(ctk.CTk):
         )
         prepared_plan = replace(plan, start_beat=current_beat)
         threading.Thread(
-            target=self._prepare_mix_update,
+            target=BlipkitApp._prepare_mix_update,
             args=(
+                self._mix_update_results,
                 mix_id,
                 prepared_plan,
-                view,
+                id(view),
                 rendered,
                 stems,
                 audio_time,
@@ -1212,11 +1233,12 @@ class BlipkitApp(ctk.CTk):
             daemon=True,
         ).start()
 
+    @staticmethod
     def _prepare_mix_update(
-        self,
+        results: queue.SimpleQueue,
         mix_id: int,
         plan: SequencerPlaybackPlan,
-        view: SequencerView,
+        view_id: int,
         rendered,
         stems: tuple[np.ndarray, ...] | None,
         audio_time: float,
@@ -1231,7 +1253,7 @@ class BlipkitApp(ctk.CTk):
         except Exception as exc:
             samples = None
             error = exc
-        self._mix_update_results.put((mix_id, plan, view, samples, rendered, audio_time, error))
+        results.put((mix_id, plan, view_id, samples, rendered, audio_time, error))
 
     def _poll_prepared_mix_updates(self) -> None:
         while True:
@@ -1239,7 +1261,7 @@ class BlipkitApp(ctk.CTk):
                 (
                     mix_id,
                     plan,
-                    view,
+                    view_id,
                     samples,
                     rendered,
                     audio_time,
@@ -1247,7 +1269,8 @@ class BlipkitApp(ctk.CTk):
                 ) = self._mix_update_results.get_nowait()
             except queue.Empty:
                 return
-            if mix_id != self._mix_update_id or not self._playing or self.current_view is not view:
+            view = self.current_view
+            if mix_id != self._mix_update_id or not self._playing or id(view) != view_id:
                 continue
             if error is not None or samples is None:
                 self.set_status(f"混音更新失败：{error}")
@@ -1460,6 +1483,7 @@ class BlipkitApp(ctk.CTk):
         snapshot = ExportSnapshot(self.project)
         self._export_running = True
         self.set_status("正在导出音频… 可继续编辑")
+        events = self._export_events
 
         def export_worker():
             try:
@@ -1468,13 +1492,13 @@ class BlipkitApp(ctk.CTk):
                     destination=destination,
                     engine=engine,
                     selected_ids=selected_ids,
-                    progress=lambda current, total, name: self._export_events.put(
+                    progress=lambda current, total, name: events.put(
                         ("progress", f"正在导出 {current}/{total} · {name}")
                     ),
                 )
-                self._export_events.put(("done", (result, destination)))
+                events.put(("done", (result, destination)))
             except Exception as exc:
-                self._export_events.put(("error", str(exc)))
+                events.put(("error", str(exc)))
 
         threading.Thread(target=export_worker, daemon=True, name="blipkit-export").start()
 
@@ -1574,6 +1598,7 @@ class BlipkitApp(ctk.CTk):
             for after_id in (
                 self._music_render_warm_after_id,
                 self._music_render_poll_after_id,
+                self._garbage_after_id,
             ):
                 if after_id is not None:
                     try:
