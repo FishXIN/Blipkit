@@ -2,6 +2,12 @@ name: Build desktop apps
 
 on:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to build
+        type: choice
+        default: all
+        options: [all, macos, windows]
   push:
     tags:
       - "v*"
@@ -11,10 +17,11 @@ permissions:
 
 jobs:
   build:
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, windows-2025]
+        os: ${{ fromJSON(inputs.platform == 'windows' && '["windows-2025"]' || inputs.platform == 'macos' && '["macos-15"]' || '["macos-15","windows-2025"]') }}
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -42,12 +49,13 @@ jobs:
           fi
 
       - name: Test
+        timeout-minutes: 6
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            .venv/Scripts/pytest
+            .venv/Scripts/python -u -m pytest -vv -o faulthandler_timeout=60
           else
-            .venv/bin/pytest
+            .venv/bin/python -u -m pytest -vv -o faulthandler_timeout=60
           fi
 
       - name: Build macOS
